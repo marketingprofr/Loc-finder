@@ -49,6 +49,10 @@ PRECISION_M = {
     "street": 150,
     "repere": 400,        # parc, arrêt nommé
     "quartier": 500,      # quartier nommé
+    # Une rue citée sans numéro ni « située » n'est pas forcément l'adresse du
+    # bien : ce peut être une rue voisine, un axe, un point de repère. Elle
+    # renseigne le secteur, pas la porte.
+    "voie_citee": 300,
     "annonceur": 800,     # position donnée par l'annonce, volontairement floue
     "municipality": 1500,
 }
@@ -132,21 +136,10 @@ def _plausible(v):
     return v is not None and SURFACE_MIN <= v <= SURFACE_MAX
 
 
-def extrait_surface(texte):
-    """Surface habitable.
-
-    On cherche d'abord celle qui est explicitement habitable, puis celle qui
-    accompagne le nombre de pièces. Ces deux formulations sont sans ambiguïté.
-    À défaut seulement, on retombe sur le plus grand nombre de m² qui ne suive
-    pas un mot de terrain — un repli qui se trompe dès que la mise en page
-    éloigne ce mot du nombre.
-    """
-    for m in RE_HABITABLE.finditer(texte):
-        v = nombre(m.group(1) or m.group(2))
-        if _plausible(v):
-            return v
+def surfaces_pieces(texte):
+    """Valeurs de m² citées à côté d'un nombre de pièces, dans l'ordre du texte."""
+    valeurs = []
     for regex in (RE_PIECES_M2, RE_M2_PIECES):
-        valeurs = []
         for m in regex.finditer(texte):
             # « 4 pièces, terrain 450 m² » : le motif enjambe le mot, la valeur
             # trouvée est celle du terrain.
@@ -156,8 +149,33 @@ def extrait_surface(texte):
             v = nombre(m.group(1))
             if _plausible(v):
                 valeurs.append(v)
+    return valeurs
+
+
+def extrait_surface(texte, titre=None):
+    """Surface habitable.
+
+    Le titre de l'annonce fait foi : « Maison 7 pièces 138 m² » ne se discute
+    pas. Viennent ensuite la surface dite habitable, puis la valeur la plus
+    souvent répétée à côté d'un nombre de pièces — une page d'annonce redit la
+    surface du bien à plusieurs endroits, alors qu'une annexe citée dans la
+    description n'apparaît qu'une fois. À défaut seulement, le plus grand
+    nombre de m² qui ne suive pas un mot de terrain.
+    """
+    if titre:
+        valeurs = surfaces_pieces(titre)
         if valeurs:
-            return min(valeurs)
+            return valeurs[0]
+    for m in RE_HABITABLE.finditer(texte):
+        v = nombre(m.group(1) or m.group(2))
+        if _plausible(v):
+            return v
+    valeurs = surfaces_pieces(texte)
+    if valeurs:
+        compte = Counter(valeurs)
+        haut = max(compte.values())
+        # à égalité, la plus grande : une annexe est plus petite que le bien
+        return max(v for v, n in compte.items() if n == haut)
     candidates = []
     for m in RE_SURFACE.finditer(texte):
         avant = sans_accents(texte[max(0, m.start() - 40):m.start()])
@@ -200,7 +218,7 @@ MARQUEURS_NEGATIFS = (r"(?:proche|pres|a proximite|aux portes|limite|acces|direc
                       r"(?:a|de) \d+ ?(?:m|metres?|min|mn|minutes?|km|kilometres?)\b)")
 
 # À l'inverse, ce qui introduit l'adresse du bien lui-même.
-MARQUEURS_ADRESSE = r"(?:situee?|sise?|adresse|se trouve|implantee?|donnant|au)"
+MARQUEURS_ADRESSE = r"(?:situee?|sise?|adresse|se trouve|implantee?|donnant sur)"
 
 # Une distance annoncée avant un lieu dit à quelle distance le bien s'en trouve.
 # On la lit pour en faire un rayon plutôt que de l'ignorer.
@@ -256,8 +274,14 @@ def charge_geo(chemin=DATA_JS):
             nom = e[0] if isinstance(e, (list, tuple)) else e
             lat = e[1] if isinstance(e, (list, tuple)) and len(e) > 2 else None
             lon = e[2] if isinstance(e, (list, tuple)) and len(e) > 2 else None
-            if nom and len(nom) >= long_min:
-                t.setdefault(sans_accents(nom), (nom, lat, lon))
+            if not nom or len(nom) < long_min:
+                continue
+            cle = sans_accents(nom)
+            t.setdefault(cle, (nom, lat, lon))
+            # OSM écrit « Les Bourroches », l'annonce écrit « Bourroches ».
+            nu = re.sub(r"^(?:le|la|les|l'|l’)\s*", "", cle)
+            if nu != cle and len(nu) >= long_min:
+                t.setdefault(nu, (nom, lat, lon))
         return t
 
     geo = {
@@ -466,13 +490,22 @@ def situe(texte, geo, session, commune_declaree=None):
             # une rue trouvée ailleurs est une homonymie, pas une adresse.
             if not bonne_commune and force == "forte":
                 continue
-            precision = PRECISION_M.get(typ, PRECISION_M["street"])
+            # Trois niveaux, et le plus prudent est le défaut. Une rue n'est
+            # tenue pour l'adresse du bien que si un numéro l'accompagne ou si
+            # le texte la donne comme telle. Citée sans rien, elle situe le
+            # secteur : c'est déjà beaucoup, et le prétendre exact était la
+            # source de la plupart des placements aberrants.
             if v["proximite"]:
-                # Le bien n'est pas à cette adresse, il est à côté : la précision
-                # affichée doit le dire. Sans distance lisible, on prend large.
-                precision = max(precision, (v["distance"] or 500) + MARGE_DISTANCE)
+                precision = max(PRECISION_M["street"],
+                                (v["distance"] or 500) + MARGE_DISTANCE)
                 if precision > DISTANCE_INUTILE:
                     continue
+            elif typ == "housenumber" and v["numero"]:
+                precision = PRECISION_M["housenumber"]
+            elif v["adresse"] or v["numero"]:
+                precision = PRECISION_M["street"]
+            else:
+                precision = PRECISION_M["voie_citee"]
             candidats.append({
                 "lat": lat, "lon": lon, "label": label, "score": score,
                 "numero": typ == "housenumber" and not v["proximite"],
@@ -491,19 +524,27 @@ def situe(texte, geo, session, commune_declaree=None):
         return resultat(meilleur["lat"], meilleur["lon"], meilleur["precision"],
                         indice, "voisinage" if meilleur["proximite"] else "adresse")
 
-    # 2. un quartier nommé
-    for cle, (nom, lat, lon), m in occurrences(t_norm, geo["quartiers"]):
-        if lat is not None:
-            return resultat(lat, lon, PRECISION_M["quartier"], nom, "quartier")
-
-    # 3. un repère : parc, arrêt
-    for cle, (nom, lat, lon), m in occurrences(t_norm, geo["reperes"]):
-        if lat is not None:
-            return resultat(lat, lon, PRECISION_M["repere"], nom, "repère")
-        if session is not None:
-            r = geocode(f"{nom}, {commune}" if commune else nom, session)
-            if r:
-                return resultat(r[0], r[1], PRECISION_M["repere"], r[3], "repère")
+    # 2 et 3. un quartier, puis un repère nommé. « Proche des Bourroches » situe
+    # tout de même, mais plus largement : la distance annoncée élargit le rayon
+    # au lieu d'être ignorée.
+    for table, base, genre in ((geo["quartiers"], PRECISION_M["quartier"], "quartier"),
+                               (geo["reperes"], PRECISION_M["repere"], "repère")):
+        for cle, (nom, lat, lon), m in occurrences(t_norm, table):
+            avant = t_norm[max(0, m.start() - 45):m.start()]
+            proche = bool(re.search(MARQUEURS_NEGATIFS, avant) or RE_DISTANCE.search(avant))
+            precision = base
+            libelle = nom
+            if proche:
+                precision = max(base, (distance_annoncee(avant) or 500) + MARGE_DISTANCE)
+                libelle = f"à proximité de {nom}"
+                if precision > DISTANCE_INUTILE:
+                    continue
+            if lat is not None:
+                return resultat(lat, lon, precision, libelle, genre)
+            if session is not None:
+                r = geocode(f"{nom}, {commune}" if commune else nom, session)
+                if r:
+                    return resultat(r[0], r[1], precision, libelle, genre)
 
     # 4. la commune seule
     if c_lat is not None:
@@ -630,6 +671,8 @@ def diagnostic(annonce, geo):
     log(f"     texte : {len(texte)} caractères  ({source})")
     log(f"     début : {texte[:150].replace(chr(10), ' ⏎ ')}")
     log(f"     voies : {[x['libelle'] for x in v] or '—'}")
+    log(f"     surfaces citées près d'un nombre de pièces : {surfaces_pieces(texte) or '—'}"
+        f" → retenue {extrait_surface(texte, annonce.get('titre'))}")
     log(f"     communes : {com or '—'} · quartiers : {qua or '—'} · repères : {rep or '—'}")
 
 
@@ -750,7 +793,7 @@ def main():
             # La recherche fournit déjà ces champs ; sinon on les tire du texte.
             "type": c["type"] or extrait_type(texte),
             "prix": c["prix"] or extrait_prix(texte),
-            "surface": c["surface"] or extrait_surface(texte),
+            "surface": c["surface"] or extrait_surface(texte, c["titre"]),
             "pieces": c["pieces"] or extrait_pieces(texte),
         }
         pos = situe(texte, geo, session, commune_declaree=c["ville"])
