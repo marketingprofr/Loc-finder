@@ -92,8 +92,9 @@ DVF_MIN_SALES = 5
 # ramène sur l'échelle « maison » : à 1,20, un appartement à 2 200 €/m² compte
 # pour 2 640, prix qu'aurait une maison équivalente au même endroit.
 # Le script vérifie ce coefficient sur les ventes réelles et le signale s'il
-# s'en écarte.
-APPART_VERS_MAISON = 1.20
+# s'en écarte. Valeur mesurée sur Dijon Métropole, ventes DVF 2023-2025 :
+# 1,32, sur 9 272 appartements appariés à des maisons vendues à moins de 800 m.
+APPART_VERS_MAISON = 1.32
 
 # Bornes de surface plausibles, par type.
 SURFACE_MAISON = (25, 400)

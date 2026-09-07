@@ -84,5 +84,6 @@ Les poids, la pente du score, les bornes de prix et le filtre budget se règlent
 - GTFS DiviaMobilités : https://transport.data.gouv.fr/datasets/gtfs-diviamobilites/
 - DVF géolocalisé : https://files.data.gouv.fr/geo-dvf/latest/csv/ (ventes de maisons
   et d'appartements, ces derniers ramenés sur l'échelle « maison » par le
-  coefficient `APPART_VERS_MAISON`, que le script mesure et commente à chaque run)
+  coefficient `APPART_VERS_MAISON`, fixé à 1,32 d'après les ventes de la
+  métropole, et que le script revérifie à chaque run)
 - Adresses : api-adresse.data.gouv.fr (depuis la carte)
