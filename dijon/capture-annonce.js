@@ -9,10 +9,12 @@
 // attribuer au bien la description de ses voisins.
 //
 // Trois voies, de la plus sûre à la plus approximative :
-//   1. la balise __NEXT_DATA__, où le site range l'annonce sous forme
-//      structurée : on y prend celle dont l'identifiant est dans l'URL ;
-//   2. le conteneur principal de la page (main, article, description) ;
-//   3. le corps entier, tronqué avant les recommandations.
+// Deux sources, combinées :
+//   - __NEXT_DATA__, où le site range l'annonce sous forme structurée : on y
+//     prend celle dont l'identifiant est dans l'URL, pour le prix, la surface
+//     et la commune, qui valent mieux que ce qu'on tirerait du texte ;
+//   - le conteneur de la description, #readme-content sur Leboncoin, à défaut
+//     main ou article, à défaut le corps tronqué avant les recommandations.
 
 (function () {
   var MAX_PROFONDEUR = 14;
@@ -58,9 +60,8 @@
     }
     var loc = a.location || {};
     return {
-      source: '__NEXT_DATA__',
       titre: a.subject || a.title || document.title,
-      texte: [a.subject, a.body, loc.city, loc.zipcode].filter(Boolean).join('\n'),
+      corps: a.body || '',
       prix: Array.isArray(a.price) ? a.price[0] : a.price,
       attributs: at,
       ville: loc.city || '', cp: loc.zipcode || '',
@@ -74,21 +75,25 @@
       .replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').slice(0, 20000);
   }
 
-  function depuisDom() {
-    var cibles = ['[data-qa-id=adview_description_container]', '[itemprop=description]',
-                  'main', 'article', '[role=main]'];
-    for (var i = 0; i < cibles.length; i++) {
-      var el = document.querySelector(cibles[i]);
+  // Du plus précis au plus large. #readme-content est le conteneur de la
+  // description sur Leboncoin ; les suivants couvrent les autres sites.
+  var CIBLES = ['#readme-content', '[data-qa-id=adview_description_container]',
+                '[itemprop=description]', 'main', 'article', '[role=main]'];
+
+  function description() {
+    for (var i = 0; i < CIBLES.length; i++) {
+      var el = null;
+      try { el = document.querySelector(CIBLES[i]); } catch (e) { continue; }
       if (el && (el.innerText || '').trim().length > 40) {
-        return { source: cibles[i], titre: document.title, texte: tronque(el.innerText) };
+        return { selecteur: CIBLES[i], texte: tronque(el.innerText) };
       }
     }
-    return { source: 'page entière', titre: document.title, texte: tronque(document.body.innerText) };
+    return { selecteur: 'page entière', texte: tronque(document.body.innerText) };
   }
 
-  var trouve = null;
-  try { trouve = depuisNextData(); } catch (e) { /* structure inattendue */ }
-  if (!trouve) trouve = depuisDom();
+  var struct = null;
+  try { struct = depuisNextData(); } catch (e) { /* structure inattendue */ }
+  var desc = description();
 
   var data = {
     type: 'annonce',
@@ -96,7 +101,23 @@
     site: location.hostname.replace(/^www\./, ''),
     capture: new Date().toISOString()
   };
-  for (var k in trouve) if (Object.prototype.hasOwnProperty.call(trouve, k)) data[k] = trouve[k];
+
+  if (struct) {
+    // Le corps rangé par le site est propre par construction : on ne lui
+    // préfère le texte affiché que s'il vient d'un conteneur identifié.
+    var corps = desc.selecteur === 'page entière' ? struct.corps : desc.texte;
+    data.source = '__NEXT_DATA__ + ' + desc.selecteur;
+    data.titre = struct.titre;
+    data.texte = [struct.titre, corps, struct.ville, struct.cp].filter(Boolean).join('\n');
+    data.prix = struct.prix;
+    data.attributs = struct.attributs;
+    data.ville = struct.ville; data.cp = struct.cp;
+    data.lat = struct.lat; data.lon = struct.lon;
+  } else {
+    data.source = desc.selecteur;
+    data.titre = document.title;
+    data.texte = desc.texte;
+  }
 
   var json = JSON.stringify(data, null, 1);
   var nom = 'annonce-' + Date.now() + '.json';
