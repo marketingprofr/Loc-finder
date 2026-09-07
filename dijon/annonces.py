@@ -675,8 +675,14 @@ def archive_captures():
 
 # ================================ MAIN =======================================
 
-def diagnostic(annonce, geo):
-    """Ce que le script voit dans une annonce, avant tout appel au géocodeur."""
+def diagnostic(annonce, geo, session=None):
+    """Ce que le script voit dans une annonce, et ce qu'il en fait.
+
+    Une rue lue dans le texte peut malgré tout ne pas servir : le géocodeur
+    peut ne rien connaître, ou répondre dans une autre commune. Sans le dire,
+    l'annonce se retrouve placée sur un simple repère et rien n'explique
+    pourquoi. Le diagnostic va donc jusqu'au bout de la décision.
+    """
     texte = annonce["texte"]
     t_norm = sans_accents(texte)
     v = voies(texte)
@@ -685,12 +691,44 @@ def diagnostic(annonce, geo):
     rep = [nom for _, (nom, _, _), _ in occurrences(t_norm, geo["reperes"])]
     source = "annonce ouverte" if annonce.get("detail") else "ligne de recherche seule"
     log(f"  ── {annonce['titre'][:60]}")
-    log(f"     texte : {len(texte)} caractères  ({source})")
+    log(f"     texte : {len(texte)} caractères  ({source})"
+        + ("" if annonce.get("propre", True) else "  ⚠ capture d'avant la correction"))
     log(f"     début : {texte[:150].replace(chr(10), ' ⏎ ')}")
-    log(f"     voies : {[x['libelle'] for x in v] or '—'}")
     log(f"     surfaces citées près d'un nombre de pièces : {surfaces_pieces(texte) or '—'}"
         f" → retenue {extrait_surface(texte, annonce.get('titre'))}")
     log(f"     communes : {com or '—'} · quartiers : {qua or '—'} · repères : {rep or '—'}")
+
+    trouvee = commune_du_texte(t_norm, geo)
+    commune, force = (trouvee[0], trouvee[3]) if trouvee else (annonce.get("ville"), "declaree")
+    log(f"     commune retenue : {commune or '—'} ({force or '—'})")
+
+    if not v:
+        log("     voies : — (aucune rue lue dans le texte)")
+        return
+    log(f"     voies lues : {[x['libelle'] for x in v]}")
+    if session is None:
+        return
+    for x in v:
+        question = " ".join(q for q in (x["numero"], x["libelle"]) if q)
+        if commune:
+            question += f", {commune}"
+        r = geocode(question, session)
+        if not r:
+            log(f"       « {question} » → le géocodeur ne connaît pas cette adresse")
+            continue
+        lat, lon, typ, label, score, ville_ban = r
+        bonne = not commune or sans_accents(ville_ban) == sans_accents(commune)
+        verdict = f"{label} [{typ}, score {score:.2f}]"
+        if not bonne and force == "forte":
+            verdict += f" → ÉCARTÉE : trouvée à {ville_ban}, pas à {commune}"
+        elif typ == "housenumber" and x["numero"]:
+            verdict += f" → retenue à ±{PRECISION_M['housenumber']} m"
+        elif x["adresse"] or x["numero"]:
+            verdict += (f" → retenue à ±{PRECISION_M['street']} m "
+                        f"(le géocodeur n'a pas le numéro, seulement la rue)")
+        else:
+            verdict += f" → retenue à ±{PRECISION_M['voie_citee']} m (rue citée sans numéro)"
+        log(f"       « {question} » → {verdict}")
 
 
 A_PRECISER = os.path.join(ICI, "a_preciser.html")
@@ -810,7 +848,7 @@ def main():
     if mode_diag:
         log("Diagnostic — ce que le script lit dans chaque annonce :")
         for c in par_url.values():
-            diagnostic(c, geo)
+            diagnostic(c, geo, session)
         log("")
 
     log("Lecture des annonces…")
