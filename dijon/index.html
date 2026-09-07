@@ -76,7 +76,9 @@
         <label><input type="radio" name="mode" value="price"> Score avec prix</label>
       </div>
       <div class="legend"></div>
-      <div class="legend-ticks"><span>≤ 3</span><span>6,5</span><span>10</span></div>
+      <div class="legend-ticks" id="ticks"><span>3</span><span>6,5</span><span>10</span></div>
+      <div class="inline" style="margin-top:6px"><label><input type="checkbox" id="etal" checked> Tendre les couleurs sur les scores obtenus</label></div>
+      <div class="note">Sinon, échelle absolue de 3 à 10.</div>
       <div class="row" style="margin-top:8px">
         <label>N'afficher que les cases au-dessus de <span id="minScoreVal">0</span> / 10</label>
         <input type="range" id="minScore" min="0" max="10" step="0.5" value="0" style="grid-column:1/3">
@@ -189,14 +191,48 @@ function total(sc, withPrice) {
   }
   return den ? num / den : 0;
 }
-// Le dégradé part de COLOR_MIN, pas de 0 : en dessous, l'emplacement est de
-// toute façon mauvais, et étaler du rouge sur 0–3 gaspille la moitié de
-// l'échelle pour des écarts sans intérêt.
+// Étalonnage des couleurs. Les scores réels n'occupent jamais tout le 0–10 :
+// selon les poids, ils se tassent souvent entre 3 et 7, et les deux tiers de
+// la palette ne servent à rien. Le dégradé est donc tendu sur l'étendue
+// observée. On coupe aux centiles 2 et 98 plutôt qu'aux extrêmes : une poignée
+// de cases aberrantes ne doit pas écraser toutes les autres.
+// Sans étalonnage, on retombe sur une échelle absolue qui part de 3, en dessous
+// de quoi l'emplacement est mauvais quel que soit l'écart.
 const COLOR_MIN = 3;
+const ETAL = { on: true, lo: COLOR_MIN, hi: 10 };
+
+function calibre(vals) {
+  if (!ETAL.on || !vals.length) { ETAL.lo = COLOR_MIN; ETAL.hi = 10; return; }
+  const tri = Float64Array.from(vals).sort();
+  const q = p => tri[clamp(Math.round(p * (tri.length - 1)), 0, tri.length - 1)];
+  ETAL.lo = q(0.02);
+  ETAL.hi = q(0.98);
+  // Carte uniforme (un seul critère à poids non nul, par exemple) : sans garde
+  // on diviserait par presque zéro et tout virerait au vert.
+  if (ETAL.hi - ETAL.lo < 0.5) { const m = (ETAL.hi + ETAL.lo) / 2; ETAL.lo = m - 0.25; ETAL.hi = m + 0.25; }
+}
+
 const color = s => {
-  const u = clamp((s - COLOR_MIN) / (10 - COLOR_MIN), 0, 1);
+  const u = clamp((s - ETAL.lo) / (ETAL.hi - ETAL.lo), 0, 1);
   return `hsl(${u * 120} 75% ${42 + u * 4}%)`;
 };
+
+// Rang d'un score parmi tous ceux de la carte, pour répondre à « 6,4, c'est bien ? »
+let scoresTries = [];
+function rang(v) {
+  if (!scoresTries.length) return null;
+  let a = 0, b = scoresTries.length;
+  while (a < b) { const m = (a + b) >> 1; if (scoresTries[m] < v) a = m + 1; else b = m; }
+  return Math.round(100 * a / scoresTries.length);
+}
+
+function majLegende() {
+  const ticks = document.getElementById('ticks');
+  const mid = (ETAL.lo + ETAL.hi) / 2;
+  ticks.children[0].textContent = ETAL.on ? `≤ ${fmt(ETAL.lo)}` : `≤ ${COLOR_MIN}`;
+  ticks.children[1].textContent = fmt(mid);
+  ticks.children[2].textContent = ETAL.on ? `≥ ${fmt(ETAL.hi)}` : '10';
+}
 
 // ---------- Carte ----------
 const map = L.map('map', { preferCanvas: true }).setView([47.322, 5.04], 12);
@@ -212,10 +248,16 @@ const rects = D.cells.map(c => {
   return r;
 });
 
+// Deux passes : on ne peut pas colorier avant de savoir sur quelle étendue
+// s'étalent les scores, et cette étendue change à chaque coup de curseur.
+const totaux = new Float64Array(D.cells.length);
 function render() {
+  for (let i = 0; i < D.cells.length; i++) totaux[i] = total(scores(D.cells[i]), S.withPrice);
+  calibre(totaux);
+  scoresTries = Float64Array.from(totaux).sort();
+  majLegende();
   for (let i = 0; i < D.cells.length; i++) {
-    const c = D.cells[i], sc = scores(c);
-    const t = total(sc, S.withPrice);
+    const c = D.cells[i], t = totaux[i];
     const hidden = t < S.minScore || (S.budget && c[F.price] != null && c[F.price] > S.budget);
     rects[i].setStyle(hidden ? { fillOpacity: 0 } : { fillOpacity: 0.55, fillColor: color(t) });
   }
@@ -245,6 +287,7 @@ function showPopup(c, latlng) {
   const wOf = k => CRIT.find(cr => cr.k === k).w;
   const html = `<div class="popup">
     <div class="tot">Hors prix <b>${fmt(total(sc, false))}</b> / 10 &nbsp;·&nbsp; avec prix <b>${fmt(total(sc, true))}</b> / 10</div>
+    <div class="muted">${(() => { const r = rang(total(sc, S.withPrice)); return r == null ? '' : `mieux que ${r} % des cases de la carte`; })()}</div>
     <table>${rows.map(([l, d, s], i) => `<tr><td><b>${l}</b><br>${d}</td><td>${s == null ? '—' : fmt(s)} <span class="muted">× ${wOf(CRIT[i].k)}</span></td></tr>`).join('')}</table>
     <div class="muted" style="margin-top:6px">${c[F.lat].toFixed(5)}, ${c[F.lon].toFixed(5)}</div>
   </div>`;
@@ -359,6 +402,8 @@ pMin.value = S.pMin; pMax.value = S.pMax;
 pMin.addEventListener('change', () => { S.pMin = +pMin.value; scheduleRender(); });
 pMax.addEventListener('change', () => { S.pMax = +pMax.value; scheduleRender(); });
 budget.addEventListener('change', () => { S.budget = +budget.value || null; scheduleRender(); });
+const etal = document.getElementById('etal');
+etal.addEventListener('change', () => { ETAL.on = etal.checked; scheduleRender(); });
 
 // ---------- Annonces ----------
 function cellAt(lat, lon) {
