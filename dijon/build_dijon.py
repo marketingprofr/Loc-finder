@@ -293,7 +293,10 @@ def parse_lieux(elements):
             continue
         if t.get("boundary") == "administrative" and t.get("admin_level") == "8":
             communes.append([nom, round(c[0], 5), round(c[1], 5)])
-        elif t.get("place") in ("suburb", "quarter", "neighbourhood", "village", "town"):
+        # village et town désignent des communes, pas des quartiers : les y ranger
+        # ferait passer une simple mention de « Dijon » pour une adresse de
+        # quartier, annoncée à 500 m près au lieu de 1 500.
+        elif t.get("place") in ("suburb", "quarter", "neighbourhood"):
             quartiers.append([nom, round(c[0], 5), round(c[1], 5)])
     # Un même nom peut revenir (noeud + relation) : on garde la première occurrence.
     def uniq(liste):
@@ -303,7 +306,11 @@ def parse_lieux(elements):
                 vus.add(nom.lower())
                 out.append([nom, la, lo])
         return out
-    return uniq(communes), uniq(quartiers)
+    communes = uniq(communes)
+    noms_communes = {n.lower() for n, _, _ in communes}
+    # Un quartier homonyme de sa commune ne dit rien de plus qu'elle.
+    quartiers = [q for q in uniq(quartiers) if q[0].lower() not in noms_communes]
+    return communes, quartiers
 
 
 def shoelace_area(ring_xy):

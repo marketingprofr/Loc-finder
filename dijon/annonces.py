@@ -3,8 +3,9 @@
 Situe des annonces immobilières sur la carte, à partir de leur texte.
 
 Usage :
-    python annonces.py              → lit les captures, écrit annonces.js
-    python annonces.py --sans-geo   → sans appel réseau (diagnostic)
+    python annonces.py                → lit les captures, écrit annonces.js
+    python annonces.py --diagnostic   → montre ce qui est lu dans chaque annonce
+    python annonces.py --sans-geo     → sans appel réseau
 
 Le principe : le favori capture-annonce.js enregistre le texte d'une annonce
 que vous avez ouverte. Ce script relit ces captures, en extrait prix, surface,
@@ -268,6 +269,9 @@ def codes_postaux(t_norm, session):
 
 
 _CACHE_GEO = {}
+# Une panne de géocodeur se voyait à peine : chaque échec passait dans une ligne
+# noyée au milieu des annonces, et le résultat final n'en disait rien.
+_STATS = {"appels": 0, "reseau": 0, "sans_resultat": 0}
 
 
 def geocode(question, session, type_ban=None):
@@ -281,13 +285,18 @@ def geocode(question, session, type_ban=None):
     params = {"q": question, "limit": 1, "lat": BIAIS[0], "lon": BIAIS[1]}
     if type_ban:
         params["type"] = type_ban
+    _STATS["appels"] += 1
     try:
         r = session.get(BAN_URL, params=params, timeout=30)
         r.raise_for_status()
         feats = r.json().get("features", [])
     except Exception as e:  # noqa
-        log(f"    géocodage indisponible ({e})")
+        _STATS["reseau"] += 1
+        if _STATS["reseau"] <= 3:
+            log(f"    géocodage indisponible ({e})")
         return None
+    if not feats:
+        _STATS["sans_resultat"] += 1
     reponse = None
     if feats:
         f = feats[0]
@@ -505,8 +514,24 @@ def archive_captures():
 
 # ================================ MAIN =======================================
 
+def diagnostic(annonce, geo):
+    """Ce que le script voit dans une annonce, avant tout appel au géocodeur."""
+    texte = annonce["texte"]
+    t_norm = sans_accents(texte)
+    v = voies(texte)
+    com = [nom for _, (nom, _, _), _ in occurrences(t_norm, geo["communes"])]
+    qua = [nom for _, (nom, _, _), _ in occurrences(t_norm, geo["quartiers"])]
+    rep = [nom for _, (nom, _, _), _ in occurrences(t_norm, geo["reperes"])]
+    log(f"  ── {annonce['titre'][:60]}")
+    log(f"     texte : {len(texte)} caractères")
+    log(f"     début : {texte[:150].replace(chr(10), ' ⏎ ')}")
+    log(f"     voies : {[x['libelle'] for x in v] or '—'}")
+    log(f"     communes : {com or '—'} · quartiers : {qua or '—'} · repères : {rep or '—'}")
+
+
 def main():
     avec_geo = "--sans-geo" not in sys.argv
+    mode_diag = "--diagnostic" in sys.argv
     session = None
     if avec_geo:
         session = requests.Session()
@@ -548,6 +573,12 @@ def main():
     if flous:
         log(f"  {len(flous)} coordonnée(s) partagée(s) par plusieurs annonces : "
             f"traitées comme des centres de commune")
+
+    if mode_diag:
+        log("Diagnostic — ce que le script lit dans chaque annonce :")
+        for c in par_url.values():
+            diagnostic(c, geo)
+        log("")
 
     log("Lecture des annonces…")
     annonces, sans_position, conflits = [], 0, 0
@@ -599,6 +630,12 @@ def main():
         f.write(";\n")
     if conflits:
         log(f"  {conflits} annonce(s) replacée(s) dans une autre commune que celle déclarée")
+    if _STATS["reseau"]:
+        log(f"  ATTENTION : {_STATS['reseau']} appel(s) au géocodeur sur {_STATS['appels']} ont échoué.")
+        log("  Sans lui, aucune rue ne peut être placée. Vérifier l'accès à "
+            "api-adresse.data.gouv.fr.")
+    elif _STATS["appels"]:
+        log(f"  géocodeur : {_STATS['appels']} appels, {_STATS['sans_resultat']} sans réponse")
     par_precision = Counter(a["precision"] for a in annonces)
     log(f"OK → {OUTPUT} : {len(annonces)} annonce(s) placée(s), {sans_position} sans position.")
     for prec in sorted(par_precision):
