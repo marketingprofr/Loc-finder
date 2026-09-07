@@ -36,9 +36,13 @@ import requests
 BBOX = (47.24, 4.93, 47.40, 5.16)          # même emprise que build_dijon.py
 BIAIS = (47.3231, 5.0321)                  # Darcy, pour orienter le géocodage
 
-CAPTURES_DIR = "captures"                  # les captures y sont archivées
-DATA_JS = "data.js"
-OUTPUT = "annonces.js"
+# Les fichiers produits doivent atterrir à côté de index.html, qui les charge
+# par leur nom. Les ancrer sur le dossier du script plutôt que sur le dossier
+# courant permet de lancer `python dijon\annonces.py` depuis n'importe où.
+ICI = os.path.dirname(os.path.abspath(__file__))
+CAPTURES_DIR = os.path.join(ICI, "captures")   # les captures y sont archivées
+DATA_JS = os.path.join(ICI, "data.js")
+OUTPUT = os.path.join(ICI, "annonces.js")
 
 BAN_URL = "https://api-adresse.data.gouv.fr/search/"
 USER_AGENT = "loc-finder/1.0 (+https://github.com/marketingprofr/Loc-finder)"
@@ -262,7 +266,7 @@ def charge_geo(chemin=DATA_JS):
     """
     vide = {"communes": {}, "quartiers": {}, "reperes": {}}
     if not os.path.exists(chemin):
-        log(f"  {chemin} absent : aucun référentiel de lieux")
+        log(f"  {os.path.basename(chemin)} absent : aucun référentiel de lieux")
         return vide
     with open(chemin, encoding="utf-8") as f:
         brut = f.read()
@@ -637,7 +641,8 @@ def centroides(annonces):
 
 def dossiers_source():
     maison = os.path.expanduser("~")
-    return [os.path.join(maison, "Downloads"), os.path.join(maison, "Téléchargements"), "."]
+    return [os.path.join(maison, "Downloads"), os.path.join(maison, "Téléchargements"),
+            ICI, os.getcwd()]
 
 
 def archive_captures():
@@ -653,7 +658,7 @@ def archive_captures():
                 shutil.move(src, dst)
                 deplaces += 1
     if deplaces:
-        log(f"  {deplaces} nouvelle(s) capture(s) rangée(s) dans {CAPTURES_DIR}/")
+        log(f"  {deplaces} nouvelle(s) capture(s) rangée(s) dans {os.path.basename(CAPTURES_DIR)}/")
     captures = []
     for p in sorted(glob.glob(os.path.join(CAPTURES_DIR, "annonce-*.json"))):
         try:
@@ -684,7 +689,7 @@ def diagnostic(annonce, geo):
     log(f"     communes : {com or '—'} · quartiers : {qua or '—'} · repères : {rep or '—'}")
 
 
-A_PRECISER = "a_preciser.html"
+A_PRECISER = os.path.join(ICI, "a_preciser.html")
 PRECISION_FINE = 200          # au-delà, l'annonce mérite d'être ouverte
 
 
@@ -849,7 +854,8 @@ def main():
     elif _STATS["appels"]:
         log(f"  géocodeur : {_STATS['appels']} appels, {_STATS['sans_resultat']} sans réponse")
     par_precision = Counter(a["precision"] for a in annonces)
-    log(f"OK → {OUTPUT} : {len(annonces)} annonce(s) placée(s), {sans_position} sans position.")
+    log(f"OK → {os.path.basename(OUTPUT)} : {len(annonces)} annonce(s) placée(s), "
+        f"{sans_position} sans position.")
     for prec in sorted(par_precision):
         log(f"  ±{prec:>4} m : {par_precision[prec]} annonce(s)")
     muettes = [a for a in annonces
@@ -859,9 +865,9 @@ def main():
             f"leur description n'en cite pas. Rien de plus à en tirer.")
     n_floues = ecrit_a_preciser(annonces)
     if n_floues:
-        log(f"  {n_floues} annonce(s) restent à ouvrir une à une : voir {A_PRECISER}")
+        log(f"  {n_floues} annonce(s) restent à ouvrir une à une : voir {os.path.basename(A_PRECISER)}")
     elif muettes:
-        log(f"  Toutes les autres ont été ouvertes : {A_PRECISER} est vide.")
+        log(f"  Toutes les autres ont été ouvertes : {os.path.basename(A_PRECISER)} est vide.")
 
 
 if __name__ == "__main__":

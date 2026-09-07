@@ -117,8 +117,11 @@ OVERPASS_URLS = [
 # S'identifier est demandé par la politique d'usage d'OSM.
 USER_AGENT = "loc-finder/1.0 (+https://github.com/marketingprofr/Loc-finder)"
 
-CACHE_DIR = "cache"
-OUTPUT = "data.js"
+# Ancrés sur le dossier du script : data.js doit tomber à côté de index.html,
+# quel que soit le dossier depuis lequel la commande est lancée.
+ICI = os.path.dirname(os.path.abspath(__file__))
+CACHE_DIR = os.path.join(ICI, "cache")
+OUTPUT = os.path.join(ICI, "data.js")
 
 # ============================== OUTILS =======================================
 
@@ -801,7 +804,7 @@ def main():
         f.write("window.DATA = ")
         json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
         f.write(";\n")
-    log(f"OK → {OUTPUT} ({os.path.getsize(OUTPUT) / 1e6:.1f} Mo) en {time.time() - t0:.0f} s. Ouvrir index.html.")
+    log(f"OK → {os.path.basename(OUTPUT)} ({os.path.getsize(OUTPUT) / 1e6:.1f} Mo) en {time.time() - t0:.0f} s. Ouvrir index.html.")
 
 
 if __name__ == "__main__":

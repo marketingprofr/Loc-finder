@@ -19,14 +19,13 @@ la carte laisse régler les poids de chaque critère et le budget.
 
 ```
 pip install -r requirements.txt
-cd dijon
-python build_dijon.py
+python dijon/build_dijon.py
 ```
 
 Puis ouvrir `dijon/index.html` dans le navigateur.
 
 Le script écrit `data.js` à côté de `index.html` et met les téléchargements en
-cache dans `cache/`. Ces deux éléments ne sont pas versionnés : la carte n'est
+cache dans `dijon/cache/`, quel que soit le dossier depuis lequel il est lancé. Ces deux éléments ne sont pas versionnés : la carte n'est
 utilisable qu'après avoir lancé le script au moins une fois.
 
 Détails, paramètres et sources : voir le README de chaque ville.
