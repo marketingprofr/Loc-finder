@@ -25,9 +25,9 @@ Il n'y a pas d'API publique chez SeLoger ou Leboncoin, et leurs conditions
 interdisent l'extraction automatisée : rien ici ne va chercher les pages tout
 seul. La capture se fait depuis votre navigateur, une annonce à la fois.
 
-Deux favoris à installer, dont l'adresse est la ligne `javascript:…` qui se
-trouve en bas de chaque fichier (dans Chrome : clic droit sur la barre de
-favoris → Ajouter un raccourci, coller la ligne dans le champ URL) :
+Deux favoris à installer une fois pour toutes. Ouvrir `favoris.html` dans le
+navigateur et faire glisser les deux boutons dans la barre de favoris
+(`python favoris.py` régénère cette page après modification des scripts) :
 
 - `capture-recherche.js` — sur une **page de résultats**, capture toutes les
   annonces affichées d'un seul clic : lien, prix, surface, pièces, description.
