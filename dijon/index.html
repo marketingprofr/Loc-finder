@@ -429,7 +429,8 @@ function annonceVisible(a) {
   return true;
 }
 
-function annoncePopup(a, c, sc) {
+function annoncePopup(a, c, info) {
+  const sc = info.score;
   const ppm2 = (a.prix && a.surface) ? a.prix / a.surface : null;
   const med = c ? c[F.price] : null;
   let ecart = '';
@@ -444,11 +445,46 @@ function annoncePopup(a, c, sc) {
       <tr><td>Prix</td><td>${a.prix ? fmtInt(a.prix) + ' €' : '—'}</td></tr>
       <tr><td>Surface</td><td>${a.surface ? fmt(a.surface) + ' m²' : '—'}${a.pieces ? ' · ' + a.pieces + ' pièces' : ''}</td></tr>
       <tr><td>Prix au m²</td><td>${ppm2 ? fmtInt(ppm2) + ' €' : '—'}${ecart}</td></tr>
-      <tr><td>Score de la case</td><td>${sc == null ? 'hors zone' : fmt(sc) + ' / 10'}</td></tr>
+      <tr><td>${info.cases > 1 ? 'Score le plus bas de la zone' : 'Score de la case'}</td>
+          <td>${sc == null ? 'hors zone' : fmt(sc) + ' / 10'}${info.cases > 1
+              ? ` <span class="muted">(sur ${fmtInt(info.cases)} cases)</span>` : ''}</td></tr>
     </table>
     <div class="muted" style="margin-top:6px">Situé d'après « ${esc(a.indice)} », à ±${esc(a.precision)} m près.</div>
     ${a.conflit ? `<div style="margin-top:4px;color:#b45309">Déplacée : l'annonce déclare ${esc(a.declaree)}, sa description dit ${esc(a.commune)}.</div>` : ''}
   </div>`;
+}
+
+const PRECISION_NETTE = 200;      // en deçà, le point vaut pour une adresse
+
+// Cases couvertes par la zone d'incertitude d'une annonce. Elles ne dépendent
+// que de sa position : on les retient, seuls les scores changeront ensuite.
+function cellulesDans(a) {
+  if (a._cases) return a._cases;
+  const dlat = a.precision / 110574;
+  const dlon = a.precision / (111320 * Math.cos(a.lat * Math.PI / 180));
+  const idx = [];
+  for (let i = 0; i < D.cells.length; i++) {
+    const c = D.cells[i];
+    const dla = c[F.lat] - a.lat, dlo = c[F.lon] - a.lon;
+    if (Math.abs(dla) > dlat || Math.abs(dlo) > dlon) continue;
+    if ((dla / dlat) ** 2 + (dlo / dlon) ** 2 <= 1) idx.push(i);
+  }
+  a._cases = idx;
+  return idx;
+}
+
+// Un bien situé au quartier près peut être sur n'importe laquelle de ces cases.
+// Lui prêter le score de celle du centre serait un pari ; on retient la pire,
+// et le popup dit sur combien de cases elle porte.
+function scoreAnnonce(a) {
+  if (a.precision <= PRECISION_NETTE) {
+    const c = cellAt(a.lat, a.lon);
+    return { score: c ? total(scores(c), S.withPrice) : null, cases: c ? 1 : 0, cellule: c };
+  }
+  const idx = cellulesDans(a);
+  let pire = Infinity;
+  for (const i of idx) if (totaux[i] < pire) pire = totaux[i];
+  return { score: idx.length ? pire : null, cases: idx.length, cellule: cellAt(a.lat, a.lon) };
 }
 
 function renderAnnonces() {
@@ -457,8 +493,8 @@ function renderAnnonces() {
   for (const a of ANN) {
     if (!annonceVisible(a)) continue;
     n++;
-    const c = cellAt(a.lat, a.lon);
-    const sc = c ? total(scores(c), S.withPrice) : null;
+    const info = scoreAnnonce(a);
+    const c = info.cellule, sc = info.score;
     const teinte = sc == null ? '#8b8f94' : color(sc);
     // Au-delà de 200 m d'incertitude, un point serait un mensonge : on dessine la zone.
     if (a.precision > 200) {
@@ -470,7 +506,7 @@ function renderAnnonces() {
     }
     annonceLayer.addLayer(
       L.circleMarker([a.lat, a.lon], { radius: 7, color: '#fff', weight: 2, fillColor: teinte, fillOpacity: 1 })
-        .bindPopup(annoncePopup(a, c, sc), { maxWidth: 320 }));
+        .bindPopup(annoncePopup(a, c, info), { maxWidth: 320 }));
   }
   const el = document.getElementById('aCount');
   if (el) el.textContent = `${n} annonce${n > 1 ? 's' : ''} sur ${ANN.length} affichée${n > 1 ? 's' : ''}`;
