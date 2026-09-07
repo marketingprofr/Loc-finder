@@ -85,6 +85,19 @@ DVF_DEPARTEMENT = "21"
 DVF_RADII_M = [500, 1000, 1500, 2500]
 DVF_MIN_SALES = 5
 
+# Maisons et appartements ne se vendent pas au même prix au m². Pour les verser
+# dans une même médiane, on ramène les appartements sur l'échelle « maison » en
+# multipliant leur prix au m² par ce coefficient.
+# Le script affiche le rapport réellement observé sur la métropole : si les deux
+# s'écartent, c'est le chiffre observé qu'il faut recopier ici. Un rapport
+# inférieur à 1 signifierait que les appartements sont plus chers au m² que les
+# maisons, et qu'il faut donc les abaisser, pas les relever.
+APPART_VERS_MAISON = 1.20
+
+# Bornes de surface plausibles, par type.
+SURFACE_MAISON = (25, 400)
+SURFACE_APPART = (15, 250)
+
 # URLs
 GTFS_URL = "https://www.data.gouv.fr/api/1/datasets/r/e0dbd217-15cd-4e28-9459-211a27511a34"
 DVF_URL = "https://files.data.gouv.fr/geo-dvf/latest/csv/{year}/departements/{dep}.csv.gz"
@@ -465,6 +478,57 @@ def load_gtfs():
 
 # ============================== DVF ==========================================
 
+def ventes_du_type(df, principal, bornes_surface):
+    """Ventes composées uniquement de `principal` (+ dépendances).
+
+    Une mutation mêlant maison et appartement est écartée : impossible de dire
+    quelle part du prix revient à quoi.
+    """
+    def keep(types):
+        s = set(t for t in types if isinstance(t, str))
+        return principal in s and s <= {principal, "Dépendance"}
+
+    ok = df.groupby("id_mutation")["type_local"].agg(keep)
+    sub = df[df["id_mutation"].isin(ok[ok].index)]
+    lots = sub[sub["type_local"] == principal]
+    if not len(lots):
+        return pd.DataFrame(columns=["lat", "lon", "ppm2"])
+    v = lots.groupby("id_mutation").agg(
+        surface=("surface_reelle_bati", "sum"),
+        price=("valeur_fonciere", "max"),
+        lat=("latitude", "first"),
+        lon=("longitude", "first"),
+    )
+    smin, smax = bornes_surface
+    v = v[(v["surface"] >= smin) & (v["surface"] <= smax) & (v["price"] >= 30_000)]
+    v["ppm2"] = v["price"] / v["surface"]
+    v = v[(v["ppm2"] >= 500) & (v["ppm2"] <= 8000)]
+    return v.reset_index(drop=True)[["lat", "lon", "ppm2"]]
+
+
+def rapport_local(maisons, apparts, rayon=800, mini=5):
+    """Rapport maison/appartement à emplacement comparable.
+
+    Le rapport des médianes globales ne vaut rien : les appartements se
+    concentrent au centre, où tout est plus cher, si bien que l'écart mesuré
+    mélange l'effet du type de bien et celui de l'emplacement — et peut même
+    s'inverser. On compare donc chaque appartement aux maisons vendues autour
+    de lui, puis on prend la médiane de ces rapports.
+
+    → (coefficient à appliquer aux appartements, nombre d'appariements).
+    """
+    if len(maisons) < mini or not len(apparts):
+        return None, 0
+    tree = cKDTree(to_xy(maisons["lat"], maisons["lon"]))
+    ppm2_m = maisons["ppm2"].to_numpy()
+    voisins = tree.query_ball_point(to_xy(apparts["lat"], apparts["lon"]), rayon)
+    rapports = [np.median(ppm2_m[v]) / a
+                for a, v in zip(apparts["ppm2"].to_numpy(), voisins) if len(v) >= mini]
+    if not rapports:
+        return None, 0
+    return float(np.median(rapports)), len(rapports)
+
+
 def load_dvf():
     cols = ["id_mutation", "nature_mutation", "valeur_fonciere", "type_local",
             "surface_reelle_bati", "longitude", "latitude"]
@@ -482,31 +546,33 @@ def load_dvf():
         df = df[df["nature_mutation"] == "Vente"]
         frames.append(df)
     if not frames:
-        return pd.DataFrame(columns=["lat", "lon", "ppm2"])
+        return pd.DataFrame(columns=["lat", "lon", "ppm2", "appart"])
     df = pd.concat(frames, ignore_index=True)
 
-    # Une mutation = une vente (plusieurs lignes : maison + dépendances + terrain).
-    # On garde les ventes composées uniquement de Maison (+ Dépendance), sans appartement ni local pro.
-    def keep(types):
-        s = set(t for t in types if isinstance(t, str))
-        return "Maison" in s and s <= {"Maison", "Dépendance"}
+    maisons = ventes_du_type(df, "Maison", SURFACE_MAISON)
+    apparts = ventes_du_type(df, "Appartement", SURFACE_APPART)
+    log(f"  ventes retenues : {len(maisons)} maisons, {len(apparts)} appartements")
 
-    grp = df.groupby("id_mutation")
-    ok = grp["type_local"].agg(keep)
-    ok_ids = ok[ok].index
-    df = df[df["id_mutation"].isin(ok_ids)]
-    houses = df[df["type_local"] == "Maison"]
-    sales = houses.groupby("id_mutation").agg(
-        surface=("surface_reelle_bati", "sum"),
-        price=("valeur_fonciere", "max"),
-        lat=("latitude", "first"),
-        lon=("longitude", "first"),
-    )
-    sales = sales[(sales["surface"] >= 25) & (sales["surface"] <= 400) & (sales["price"] >= 30_000)]
-    sales["ppm2"] = sales["price"] / sales["surface"]
+    coef, n_paires = rapport_local(maisons, apparts)
+    if coef is not None:
+        log(f"  rapport maison/appartement mesuré à emplacement comparable : {coef:.2f} "
+            f"(sur {n_paires} appartements)")
+        log(f"  coefficient appliqué : {APPART_VERS_MAISON:.2f}"
+            + ("" if abs(coef - APPART_VERS_MAISON) < 0.08
+               else f"  ← écart notable, envisager APPART_VERS_MAISON = {coef:.2f}"))
+    else:
+        log("  trop peu de ventes voisines pour mesurer le rapport maison/appartement")
+
+    apparts = apparts.copy()
+    apparts["ppm2"] *= APPART_VERS_MAISON
+    maisons["appart"] = False
+    apparts["appart"] = True
+
+    sales = pd.concat([maisons, apparts], ignore_index=True)
+    # Le coefficient peut faire sortir des appartements des bornes : on les
+    # réapplique après correction, pas avant.
     sales = sales[(sales["ppm2"] >= 500) & (sales["ppm2"] <= 8000)]
-    log(f"  ventes de maisons retenues : {len(sales)}")
-    return sales.reset_index(drop=True)[["lat", "lon", "ppm2"]]
+    return sales.reset_index(drop=True)[["lat", "lon", "ppm2", "appart"]]
 
 
 # ============================== GRILLE =======================================
@@ -559,10 +625,12 @@ def price_per_cell(grid_xy, sales):
     price = np.full(n, np.nan)
     count = np.zeros(n, dtype=int)
     radius_used = np.zeros(n, dtype=int)
+    part_appart = np.zeros(n, dtype=int)
     if len(sales) == 0:
-        return price, count, radius_used
+        return price, count, radius_used, part_appart
     tree = cKDTree(to_xy(sales["lat"], sales["lon"]))
     ppm2 = sales["ppm2"].to_numpy()
+    est_appart = sales["appart"].to_numpy().astype(bool)
     for radius in DVF_RADII_M:
         todo = np.where(np.isnan(price))[0]
         if not len(todo):
@@ -573,8 +641,11 @@ def price_per_cell(grid_xy, sales):
                 price[k] = np.median(ppm2[cand])
                 count[k] = len(cand)
                 radius_used[k] = radius
+                # Sur quoi repose la médiane : une case du centre s'appuie
+                # surtout sur des appartements, la périphérie sur des maisons.
+                part_appart[k] = round(100 * est_appart[cand].mean())
         log(f"  rayon {radius} m : {int((~np.isnan(price)).sum())}/{n} cases estimées")
-    return price, count, radius_used
+    return price, count, radius_used, part_appart
 
 
 def park_points(green_xy, green_owner, green_names):
@@ -608,7 +679,7 @@ def main():
     log("GTFS Divia…")
     stops = load_gtfs()
 
-    sales = pd.DataFrame(columns=["lat", "lon", "ppm2"])
+    sales = pd.DataFrame(columns=["lat", "lon", "ppm2", "appart"])
     if use_dvf:
         log("DVF…")
         sales = load_dvf()
@@ -623,7 +694,7 @@ def main():
     bm, bidx = nearest_minutes(grid_xy, to_xy(pois["b"]["lat"], pois["b"]["lon"]))
     pm, pidx = nearest_minutes(grid_xy, green_xy)
     pidx = np.where(pidx >= 0, green_owner[np.maximum(pidx, 0)], -1) if len(green_owner) else pidx
-    price, nsales, prad = price_per_cell(grid_xy, sales)
+    price, nsales, prad, papp = price_per_cell(grid_xy, sales)
 
     # Filtrage des cases sans intérêt (loin de tout)
     stack = np.column_stack((np.nan_to_num(tw, nan=1e9), sm, gm, bm, pm))
@@ -640,7 +711,7 @@ def main():
             r1(gm[k]), int(gidx[k]),
             r1(bm[k]), int(bidx[k]),
             r1(pm[k]), int(pidx[k]),
-            None if math.isnan(price[k]) else int(price[k]), int(nsales[k]), int(prad[k]),
+            None if math.isnan(price[k]) else int(price[k]), int(nsales[k]), int(prad[k]), int(papp[k]),
         ])
 
     valid_prices = price[~np.isnan(price)]
@@ -651,11 +722,12 @@ def main():
         "lat0": LAT0,
         "max_ride_min": MAX_RIDE_MIN,
         "full_freq_per_h": FULL_FREQ_PER_H,
+        "appart_vers_maison": APPART_VERS_MAISON,
         "price_p10": int(np.percentile(valid_prices, 10)) if len(valid_prices) else None,
         "price_p90": int(np.percentile(valid_prices, 90)) if len(valid_prices) else None,
         "centre": list(CENTRE_POINTS.keys()),
         "fields": ["lat", "lon", "t_walk", "t_idx", "s_min", "s_idx", "g_min", "g_idx",
-                   "b_min", "b_idx", "p_min", "p_idx", "price", "n_sales", "p_rad"],
+                   "b_min", "b_idx", "p_min", "p_idx", "price", "n_sales", "p_rad", "p_app"],
     }
     data = {
         "meta": meta,

@@ -51,5 +51,7 @@ Les poids, la pente du score, les bornes de prix et le filtre budget se règlent
 
 - OpenStreetMap (Overpass) : supérettes/supermarchés, boulangeries, salles de sport, parcs/jardins publics ≥ 1 ha, bois ≥ 5 ha
 - GTFS DiviaMobilités : https://transport.data.gouv.fr/datasets/gtfs-diviamobilites/
-- DVF géolocalisé : https://files.data.gouv.fr/geo-dvf/latest/csv/
+- DVF géolocalisé : https://files.data.gouv.fr/geo-dvf/latest/csv/ (ventes de maisons
+  et d'appartements, ces derniers ramenés sur l'échelle « maison » par le
+  coefficient `APPART_VERS_MAISON`, que le script mesure et commente à chaque run)
 - Adresses : api-adresse.data.gouv.fr (depuis la carte)

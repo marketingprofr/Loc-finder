@@ -282,7 +282,7 @@ function showPopup(c, latlng) {
     ['Salle de sport', `${name(P.g, c[F.g_idx])} — ${minTxt(c[F.g_min])}`, sc.g],
     ['Boulangerie', `${name(P.b, c[F.b_idx])} — ${minTxt(c[F.b_min])}`, sc.b],
     ['Parc', `${name(P.p, c[F.p_idx])} — ${minTxt(c[F.p_min])}`, sc.p],
-    ['Prix maisons', c[F.price] == null ? 'pas assez de ventes autour' : `${fmtInt(c[F.price])} €/m² <span class="muted">(${c[F.n_sales]} ventes à moins de ${fmtInt(c[F.p_rad])} m)</span>`, sc.x],
+    ['Prix au m²', c[F.price] == null ? 'pas assez de ventes autour' : `${fmtInt(c[F.price])} €/m² <span class="muted">(${c[F.n_sales]} ventes à moins de ${fmtInt(c[F.p_rad])} m${c[F.p_app] == null ? '' : `, dont ${c[F.p_app]} % d'appartements`})</span>`, sc.x],
   ];
   const wOf = k => CRIT.find(cr => cr.k === k).w;
   const html = `<div class="popup">
