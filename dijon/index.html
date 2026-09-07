@@ -102,10 +102,10 @@ const F = {}; D.meta.fields.forEach((f, i) => F[f] = i);
 const CRIT = [
   { k: 't', label: 'Tram / bus vers le centre', w: 10 },
   { k: 's', label: 'Supérette, supermarché', w: 8 },
-  { k: 'g', label: 'Salle de sport', w: 6 },
-  { k: 'b', label: 'Boulangerie', w: 5 },
-  { k: 'p', label: 'Parc, espace vert', w: 5 },
-  { k: 'x', label: 'Prix au m²', w: 5 },
+  { k: 'g', label: 'Salle de sport', w: 4 },
+  { k: 'b', label: 'Boulangerie', w: 6 },
+  { k: 'p', label: 'Parc, espace vert', w: 4 },
+  { k: 'x', label: 'Prix au m²', w: 10 },
 ];
 const S = { zeroAt: 10, pMin: D.meta.price_p10 ?? 2000, pMax: D.meta.price_p90 ?? 3500, budget: null, minScore: 0, withPrice: false };
 const fmt = n => n.toLocaleString('fr-FR', { maximumFractionDigits: 1 });
