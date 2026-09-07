@@ -62,7 +62,7 @@
         <label><input type="radio" name="mode" value="price"> Score avec prix</label>
       </div>
       <div class="legend"></div>
-      <div class="legend-ticks"><span>0</span><span>5</span><span>10</span></div>
+      <div class="legend-ticks"><span>≤ 3</span><span>6,5</span><span>10</span></div>
       <div class="row" style="margin-top:8px">
         <label>N'afficher que les cases au-dessus de <span id="minScoreVal">0</span> / 10</label>
         <input type="range" id="minScore" min="0" max="10" step="0.5" value="0" style="grid-column:1/3">
@@ -138,7 +138,14 @@ function total(sc, withPrice) {
   }
   return den ? num / den : 0;
 }
-const color = s => `hsl(${(s / 10) * 120} 75% ${42 + s * 0.4}%)`;
+// Le dégradé part de COLOR_MIN, pas de 0 : en dessous, l'emplacement est de
+// toute façon mauvais, et étaler du rouge sur 0–3 gaspille la moitié de
+// l'échelle pour des écarts sans intérêt.
+const COLOR_MIN = 3;
+const color = s => {
+  const u = clamp((s - COLOR_MIN) / (10 - COLOR_MIN), 0, 1);
+  return `hsl(${u * 120} 75% ${42 + u * 4}%)`;
+};
 
 // ---------- Carte ----------
 const map = L.map('map', { preferCanvas: true }).setView([47.322, 5.04], 12);
