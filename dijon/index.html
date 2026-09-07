@@ -30,6 +30,11 @@
   button { padding: 6px 10px; border: 1px solid #c9ced4; background: #fff; border-radius: 4px; font: inherit; cursor: pointer; }
   button:hover { background: #f1f3f5; }
   .radio { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  .poi { width: 22px; height: 22px; line-height: 21px; text-align: center; font-size: 12px;
+         background: #fff; border: 1px solid #b9bec4; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,.28); }
+  .poi-on { border: 2px solid #111; line-height: 19px; box-shadow: 0 0 0 4px rgba(17,17,17,.22); }
+  .cats { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+  .cats label { display: flex; align-items: center; gap: 6px; }
   .legend { height: 10px; border-radius: 3px; background: linear-gradient(90deg, hsl(0 75% 45%), hsl(60 75% 45%), hsl(120 75% 40%)); margin: 6px 0 2px; }
   .legend-ticks { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
   .note { color: var(--muted); font-size: 12px; margin-top: 4px; }
@@ -77,7 +82,12 @@
       <div class="note">10 → un point perdu par minute (5 min = 5 pts). 5 → deux points perdus par minute.</div>
       <div class="inline" style="margin-top:10px"><span>Prix : 10 pts à</span><input type="number" id="pMin" step="50"><span>€/m², 0 pt à</span><input type="number" id="pMax" step="50"><span>€/m²</span></div>
       <div class="inline"><span>Masquer au-dessus de</span><input type="number" id="budget" step="50" placeholder="—"><span>€/m²</span></div>
-      <div class="inline"><label><input type="checkbox" id="showStops"> Afficher les arrêts retenus</label></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Repères sur la carte</legend>
+      <div class="cats" id="cats"></div>
+      <div class="note" id="catsNote">Visibles à partir du zoom 14. Cliquer une case entoure les repères retenus pour elle.</div>
     </fieldset>
 
     <fieldset id="annoncesBox" hidden>
@@ -122,6 +132,11 @@ const S = { zeroAt: 10, pMin: D.meta.price_p10 ?? 2000, pMax: D.meta.price_p90 ?
 const fmt = n => n.toLocaleString('fr-FR', { maximumFractionDigits: 1 });
 const fmtInt = n => n.toLocaleString('fr-FR', { maximumFractionDigits: 0 });
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+// Noms de commerces et textes d'annonces viennent de sources externes : on échappe,
+// et on n'ouvre que du http(s).
+const esc = v => String(v ?? '').replace(/[&<>"']/g, ch =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const safeUrl = u => /^https?:\/\//i.test(u || '') ? u : '#';
 
 document.getElementById('title').textContent = 'Où acheter — ' + D.meta.city;
 document.getElementById('subtitle').textContent =
@@ -204,16 +219,20 @@ const scheduleRender = () => { if (!raf) raf = requestAnimationFrame(() => { raf
 // ---------- Popup ----------
 function minTxt(m) { return m == null ? '—' : `${fmt(m)} min à pied`; }
 function showPopup(c, latlng) {
+  retenus = { t: c[F.t_idx], s: c[F.s_idx], b: c[F.b_idx], g: c[F.g_idx], p: c[F.p_idx],
+              point: [latlng.lat, latlng.lng] };
+  renderPois();
   const sc = scores(c);
   const st = c[F.t_idx] >= 0 ? D.stops[c[F.t_idx]] : null;
   const tp = tramParts(c);
-  const name = (list, i) => (i >= 0 && list[i]) ? list[i] : '—';
+  const name = (list, i) => (i >= 0 && list[i]) ? list[i][0] : '—';
+  const P = POINTS;
   const rows = [
     ['Tram / bus', st ? `${st[0]} (${st[1]}) — ${minTxt(c[F.t_walk])}<br><span class="muted">${fmt(st[2])} min de trajet · ${fmt(st[3])} départs/h vers le centre<br>${fmt(tp.walk)} pts de marche × ${fmt(tp.freq)} (fréquence) × ${fmt(tp.ride)} (trajet)</span>` : 'aucun arrêt utile à moins de 12 min', sc.t],
-    ['Supérette', `${name(D.pois.s, c[F.s_idx])} — ${minTxt(c[F.s_min])}`, sc.s],
-    ['Salle de sport', `${name(D.pois.g, c[F.g_idx])} — ${minTxt(c[F.g_min])}`, sc.g],
-    ['Boulangerie', `${name(D.pois.b, c[F.b_idx])} — ${minTxt(c[F.b_min])}`, sc.b],
-    ['Parc', `${name(D.parks, c[F.p_idx])} — ${minTxt(c[F.p_min])}`, sc.p],
+    ['Supérette', `${name(P.s, c[F.s_idx])} — ${minTxt(c[F.s_min])}`, sc.s],
+    ['Salle de sport', `${name(P.g, c[F.g_idx])} — ${minTxt(c[F.g_min])}`, sc.g],
+    ['Boulangerie', `${name(P.b, c[F.b_idx])} — ${minTxt(c[F.b_min])}`, sc.b],
+    ['Parc', `${name(P.p, c[F.p_idx])} — ${minTxt(c[F.p_min])}`, sc.p],
     ['Prix maisons', c[F.price] == null ? 'pas assez de ventes autour' : `${fmtInt(c[F.price])} €/m² <span class="muted">(${c[F.n_sales]} ventes à moins de ${fmtInt(c[F.p_rad])} m)</span>`, sc.x],
   ];
   const wOf = k => CRIT.find(cr => cr.k === k).w;
@@ -225,14 +244,70 @@ function showPopup(c, latlng) {
   L.popup({ maxWidth: 340 }).setLatLng(latlng).setContent(html).openOn(map);
 }
 
-// ---------- Arrêts ----------
-const stopLayer = L.layerGroup();
-D.stops.forEach(s => {
-  L.circleMarker([s[4], s[5]], { radius: 4, color: '#1d4ed8', weight: 1, fillOpacity: 0.8 })
-    .bindPopup(`<b>${s[0]}</b> (${s[1]})<br>${fmt(s[2])} min de trajet · ${fmt(s[3])} départs/h vers le centre`)
-    .addTo(stopLayer);
+// ---------- Repères ----------
+// Les catégories sont indexées comme les critères : la case retient un repère
+// par catégorie (t_idx, s_idx…), qu'on peut donc entourer quand on la clique.
+const CATS = [
+  { k: 't', emoji: '\u{1F68B}', label: 'Arrêts' },
+  { k: 's', emoji: '\u{1F6D2}', label: 'Supérettes' },
+  { k: 'b', emoji: '\u{1F950}', label: 'Boulangeries' },
+  { k: 'g', emoji: '\u{1F3CB}', label: 'Salles de sport' },
+  { k: 'p', emoji: '\u{1F333}', label: 'Parcs' },
+];
+// [nom, lat, lon] pour tout le monde, y compris les arrêts dont data.js donne plus.
+// data.js d'avant cette version ne donnait que les noms : on les accepte, sans
+// coordonnées ils ne seront simplement pas dessinés. Relancer build_dijon.py
+// les fait apparaître.
+const triplets = l => (l || []).map(x => typeof x === 'string' ? [x, null, null] : x);
+const POINTS = {
+  t: D.stops.map(s => [`${s[0]} (${s[1]})`, s[4], s[5], `${fmt(s[2])} min de trajet · ${fmt(s[3])} départs/h`]),
+  s: triplets(D.pois.s), b: triplets(D.pois.b), g: triplets(D.pois.g), p: triplets(D.parks),
+};
+const sansCoord = ['s', 'b', 'g', 'p'].every(k => POINTS[k].every(p => p[1] == null));
+const POI_ZOOM = 14;
+const poiLayer = L.layerGroup().addTo(map);
+const catOn = { t: true, s: true, b: true, g: true, p: true };
+let retenus = null;   // repères de la case cliquée, + son point
+
+const poiIcon = (emoji, on) => L.divIcon({
+  className: '', iconSize: [22, 22], iconAnchor: [11, 11],
+  html: `<div class="poi${on ? ' poi-on' : ''}">${emoji}</div>`,
 });
-document.getElementById('showStops').addEventListener('change', e => e.target.checked ? stopLayer.addTo(map) : stopLayer.remove());
+
+function renderPois() {
+  poiLayer.clearLayers();
+  const z = map.getZoom(), vue = map.getBounds();
+  for (const cat of CATS) {
+    const pts = POINTS[cat.k] || [];
+    const vise = retenus ? retenus[cat.k] : -1;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      if (!p || p[1] == null) continue;
+      const on = i === vise;
+      // Un repère retenu reste visible même dézoomé : c'est la réponse à la question posée.
+      if (!on && (!catOn[cat.k] || z < POI_ZOOM || !vue.contains([p[1], p[2]]))) continue;
+      poiLayer.addLayer(
+        L.marker([p[1], p[2]], { icon: poiIcon(cat.emoji, on), zIndexOffset: on ? 1000 : 0 })
+          .bindPopup(`<b>${esc(p[0])}</b>${p[3] ? '<br>' + esc(p[3]) : ''}`));
+    }
+    if (retenus && vise >= 0 && pts[vise] && pts[vise][1] != null) {
+      poiLayer.addLayer(L.polyline([retenus.point, [pts[vise][1], pts[vise][2]]],
+        { color: '#111', weight: 1, opacity: 0.45, dashArray: '4 4' }));
+    }
+  }
+}
+
+const cats = document.getElementById('cats');
+cats.innerHTML = CATS.map(c =>
+  `<label><input type="checkbox" data-cat="${c.k}" checked> ${c.emoji} ${c.label}</label>`).join('');
+cats.addEventListener('change', e => {
+  catOn[e.target.dataset.cat] = e.target.checked;
+  renderPois();
+});
+map.on('moveend zoomend', renderPois);
+map.on('popupclose', () => { if (retenus) { retenus = null; renderPois(); } });
+if (sansCoord) document.getElementById('catsNote').textContent =
+  'Seuls les arrêts sont plaçables : relancer build_dijon.py pour situer commerces et parcs.';
 
 // ---------- Panneau ----------
 const wBox = document.getElementById('weights');
@@ -255,11 +330,6 @@ pMax.addEventListener('change', () => { S.pMax = +pMax.value; scheduleRender(); 
 budget.addEventListener('change', () => { S.budget = +budget.value || null; scheduleRender(); });
 
 // ---------- Annonces ----------
-// Le texte vient de pages web quelconques : on l'échappe, et on n'ouvre que du http(s).
-const esc = v => String(v ?? '').replace(/[&<>"']/g, ch =>
-  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-const safeUrl = u => /^https?:\/\//i.test(u || '') ? u : '#';
-
 function cellAt(lat, lon) {
   let best = -1, bestD = Infinity;
   for (let i = 0; i < D.cells.length; i++) {
@@ -367,6 +437,7 @@ document.getElementById('addr').addEventListener('keydown', e => { if (e.key ===
 
 render();
 renderAnnonces();
+renderPois();
 </script>
 </body>
 </html>

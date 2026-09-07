@@ -577,6 +577,19 @@ def price_per_cell(grid_xy, sales):
     return price, count, radius_used
 
 
+def park_points(green_xy, green_owner, green_names):
+    """Un point représentatif par espace vert : le centre de son contour échantillonné."""
+    sortie = []
+    for i, nom in enumerate(green_names):
+        m = green_owner == i
+        if not m.any():
+            sortie.append([nom, None, None])
+            continue
+        lat, lon = to_latlon(green_xy[m].mean(axis=0)[None, :])
+        sortie.append([nom, round(float(lat[0]), 5), round(float(lon[0]), 5)])
+    return sortie
+
+
 def r1(x):
     return None if x is None or (isinstance(x, float) and math.isnan(x)) else round(float(x), 1)
 
@@ -650,8 +663,10 @@ def main():
         "stops": [[r.stop_name, r.lines, round(float(r.ride_med), 1), round(float(r.dph), 1),
                    round(float(r.stop_lat), 5), round(float(r.stop_lon), 5)]
                   for r in stops.itertuples()],
-        "pois": {k: v["name"].tolist() for k, v in pois.items()},
-        "parks": green_names,
+        "pois": {k: [[n, round(float(la), 5), round(float(lo), 5)]
+                     for n, la, lo in zip(v["name"], v["lat"], v["lon"])]
+                 for k, v in pois.items()},
+        "parks": park_points(green_xy, green_owner, green_names),
     }
     with open(OUTPUT, "w", encoding="utf-8") as f:
         f.write("window.DATA = ")
