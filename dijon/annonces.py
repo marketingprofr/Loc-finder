@@ -791,6 +791,13 @@ def fmt_eur(v):
 def main():
     avec_geo = "--sans-geo" not in sys.argv
     mode_diag = "--diagnostic" in sys.argv
+    # `--diagnostic 379000` ne détaille que les annonces dont le titre, l'URL ou
+    # le prix contient ce terme : la sortie complète est illisible passé
+    # quelques annonces, et c'est toujours une seule qu'on cherche à comprendre.
+    filtre_diag = ""
+    if mode_diag:
+        suite = sys.argv[sys.argv.index("--diagnostic") + 1:]
+        filtre_diag = sans_accents(suite[0]) if suite and not suite[0].startswith("-") else ""
     session = None
     if avec_geo:
         session = requests.Session()
@@ -846,8 +853,14 @@ def main():
             f"traitées comme des centres de commune")
 
     if mode_diag:
-        log("Diagnostic — ce que le script lit dans chaque annonce :")
-        for c in par_url.values():
+        vus = [c for c in par_url.values()
+               if not filtre_diag or filtre_diag in sans_accents(
+                   f"{c.get('titre')} {c.get('url')} {c.get('prix')}")]
+        cible = f" contenant « {filtre_diag} »" if filtre_diag else ""
+        log(f"Diagnostic — {len(vus)} annonce(s){cible} :")
+        if filtre_diag and not vus:
+            log("  aucune ne correspond. Essayez le prix sans espaces, ou un mot du titre.")
+        for c in vus:
             diagnostic(c, geo, session)
         log("")
 
