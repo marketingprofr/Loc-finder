@@ -51,13 +51,22 @@ Chenôve » ne doit pas atterrir à Dijon.
 
 Les signaux, du plus au moins précis :
 
-1. une rue, géocodée dans la commune retenue — 150 m ;
+1. une rue, géocodée dans la commune retenue — 150 m, ou 60 m si l'annonce
+   donne un numéro (« au 12 rue de la Liberté ») ;
 2. un quartier nommé (Montchapet, Fontaine d'Ouche…) — 500 m ;
 3. un parc ou un arrêt cité — 400 m ;
 4. la commune seule — 1 500 m ;
 5. à défaut, la position donnée par l'annonce, volontairement floue — 800 m,
    ou 1 500 m si plusieurs annonces partagent la même coordonnée, auquel cas
    c'est le centre de la commune et non la position du bien.
+
+Toutes les voies citées sont essayées, pas seulement la première : une annonce
+mentionne souvent une rue voisine avant la sienne. Est retenue celle qui porte
+un numéro, puis celle qui tombe dans la commune retenue, puis celle qui est
+donnée comme l'adresse du bien (« située rue X ») plutôt que comme un voisinage
+(« à 200 m de la rue X »). Les libellés couvrent aussi les résidences, clos,
+hameaux et lotissements, et un nom de voie doit contenir un mot capitalisé —
+sans quoi « rue calme et arborée » passait pour une adresse.
 
 Une commune n'est retenue que si le contexte la désigne : « à Chenôve » ou
 « Chenôve 21300 » comptent, « proche de Chenôve » et « à 10 min de Dijon » sont

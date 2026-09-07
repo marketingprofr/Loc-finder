@@ -59,11 +59,19 @@ CENTROIDE_MIN = 3
 PRIX_MIN, PRIX_MAX = 30_000, 3_000_000
 SURFACE_MIN, SURFACE_MAX = 15, 600
 
-VOIE = (r"(?:rue|avenue|av\.|boulevard|bd|impasse|all[ée]e|place|chemin|route|"
-        r"quai|cours|square|passage|sentier|mail|faubourg|montée|esplanade)")
-MOT = r"[A-ZÉÈÀÂÔÎÇ][\wÀ-ÿ'’\-]*"
+VOIE = (r"(?:rue|ruelle|avenue|av\.|boulevard|bd|bld|impasse|imp\.|all[ée]e|place|pl\.|"
+        r"chemin|ch\.|route|rte|quai|cours|square|passage|sentier|venelle|mail|faubourg|"
+        r"mont[ée]e|esplanade|promenade|parvis|traverse|cit[ée]|r[ée]sidence|clos|hameau|"
+        r"lotissement|rond-point|voie)")
+# Un mot de nom de voie commence par une majuscule ou un chiffre — « rue du
+# 8 Mai 1945 ». Sans cette exigence, et le motif étant insensible à la casse,
+# « rue calme et arborée » passait pour une adresse.
+MOT = r"[A-ZÉÈÀÂÔÎÇÜŒ0-9][\wÀ-ÿ'’\-]*"
 LIAISON = r"(?:de |du |des |la |le |les |d'|l'|d’|l’)"
-RE_VOIE = re.compile(rf"\b{VOIE}\s+(?:{LIAISON})*{MOT}(?:\s+(?:{LIAISON})*{MOT}){{0,3}}", re.I)
+RE_VOIE = re.compile(
+    r"(?:(?P<num>\d{1,4})\s*(?P<suf>bis|ter|quater)?[\s,]+)?"
+    rf"(?P<type>(?i:{VOIE}))\s+"
+    rf"(?P<nom>(?:{LIAISON})*{MOT}(?:\s+(?:{LIAISON})*{MOT}){{0,3}})")
 
 SEP = "[ \u00a0\u202f.]"           # espace, insécable, fine insécable, point — jamais \n
 NOMBRE_FR = rf"\d{{1,3}}(?:{SEP}?\d{{3}})+"
@@ -146,7 +154,13 @@ def extrait_type(texte):
 # Une commune citée après ces mots ne dit pas où est le bien, mais ce qu'il y a
 # autour : « à 10 min de Dijon » se lit justement comme « pas à Dijon ».
 MARQUEURS_NEGATIFS = (r"(?:proche|pres|a proximite|aux portes|limite|acces|direction|vers|"
-                      r"non loin|a \d+ ?(?:min|mn|km))")
+                      r"non loin|face|a deux pas|a quelques (?:pas|minutes|metres)|"
+                      # une distance chiffrée, en mètres comme en minutes : « à 200 m de
+                      # la rue X » désigne une voisine, pas l'adresse du bien
+                      r"(?:a|de) \d+ ?(?:m|metres?|min|mn|minutes?|km|kilometres?)\b)")
+
+# À l'inverse, ce qui introduit l'adresse du bien lui-même.
+MARQUEURS_ADRESSE = r"(?:situee?|sise?|adresse|se trouve|implantee?|donnant|au)"
 # Ceux-ci, au contraire, désignent l'emplacement du bien.
 MARQUEURS_POSITIFS = (r"(?:a|sur|dans|secteur|commune de|ville de|situee? a|situe a|"
                       r"centre de|centre|quartier de|quartier|au coeur de|coeur de)")
@@ -253,8 +267,17 @@ def codes_postaux(t_norm, session):
     return out
 
 
+_CACHE_GEO = {}
+
+
 def geocode(question, session, type_ban=None):
-    """→ (lat, lon, type BAN, libellé) ou None."""
+    """→ (lat, lon, type BAN, libellé, score, commune) ou None.
+
+    Les réponses sont retenues : une même rue revient d'une annonce à l'autre.
+    """
+    cle = (question, type_ban)
+    if cle in _CACHE_GEO:
+        return _CACHE_GEO[cle]
     params = {"q": question, "limit": 1, "lat": BIAIS[0], "lon": BIAIS[1]}
     if type_ban:
         params["type"] = type_ban
@@ -265,24 +288,41 @@ def geocode(question, session, type_ban=None):
     except Exception as e:  # noqa
         log(f"    géocodage indisponible ({e})")
         return None
-    if not feats:
-        return None
-    f = feats[0]
-    lon, lat = f["geometry"]["coordinates"]
-    p = f["properties"]
-    if not dans_bbox(lat, lon) or p.get("score", 0) < 0.4:
-        return None
-    return lat, lon, p.get("type", "street"), p.get("label", question)
+    reponse = None
+    if feats:
+        f = feats[0]
+        lon, lat = f["geometry"]["coordinates"]
+        p = f["properties"]
+        if dans_bbox(lat, lon) and p.get("score", 0) >= 0.4:
+            reponse = (lat, lon, p.get("type", "street"), p.get("label", question),
+                       float(p.get("score", 0)), p.get("city", ""))
+    _CACHE_GEO[cle] = reponse
+    return reponse
+
+
+MAX_VOIES = 6          # plafond d'appels au géocodeur par annonce
 
 
 def voies(texte):
-    """Noms de voie cités, dans l'ordre du texte."""
+    """Voies citées : libellé, numéro éventuel, et si elle est donnée comme voisine."""
     vus, out = set(), []
     for m in RE_VOIE.finditer(texte):
-        libelle = re.sub(r"\s+", " ", m.group(0)).strip(" ,.;:")
-        if len(libelle) > 8 and libelle.lower() not in vus:
-            vus.add(libelle.lower())
-            out.append(libelle)
+        libelle = re.sub(r"\s+", " ", f"{m.group('type')} {m.group('nom')}").strip(" ,.;:")
+        cle = sans_accents(libelle)
+        if len(libelle) < 9 or cle in vus:
+            continue
+        vus.add(cle)
+        avant = sans_accents(texte[max(0, m.start() - 30):m.start()])
+        out.append({
+            "libelle": libelle,
+            "numero": m.group("num"),
+            # « à 200 m de la rue X » situe encore, mais moins bien qu'« au 12 rue X ».
+            "proximite": bool(re.search(MARQUEURS_NEGATIFS + r"[ ,;:'’a-z]{0,14}$", avant)),
+            # « située rue X » désigne l'adresse du bien.
+            "adresse": bool(re.search(MARQUEURS_ADRESSE + r"[ ,;:'’a-z]{0,10}$", avant)),
+        })
+        if len(out) >= MAX_VOIES:
+            break
     return out
 
 
@@ -314,16 +354,34 @@ def situe(texte, geo, session, commune_declaree=None):
         return {"lat": lat, "lon": lon, "precision": precision, "indice": indice,
                 "source": source, "commune": commune, "conflit": conflit}
 
-    # 1. une rue, replacée dans sa commune
-    for libelle in voies(texte):
-        if session is None:
-            break
-        question = f"{libelle}, {commune}" if commune else libelle
-        r = geocode(question, session)
-        if r:
-            lat, lon, typ, label = r
-            return resultat(lat, lon, PRECISION_M.get(typ, PRECISION_M["street"]),
-                            label, "adresse")
+    # 1. une rue, cherchée dans la commune retenue. On les essaie toutes et on
+    # garde la meilleure : une annonce cite souvent une rue voisine avant la
+    # sienne, et un numéro vaut mieux qu'un nom seul.
+    candidats = []
+    if session is not None:
+        for v in voies(texte):
+            question = " ".join(x for x in (v["numero"], v["libelle"]) if x)
+            if commune:
+                question += f", {commune}"
+            r = geocode(question, session)
+            if not r:
+                continue
+            lat, lon, typ, label, score, ville_ban = r
+            candidats.append({
+                "lat": lat, "lon": lon, "label": label, "score": score,
+                "numero": typ == "housenumber",
+                "bonne_commune": (not commune
+                                  or sans_accents(ville_ban) == sans_accents(commune)),
+                "proximite": v["proximite"],
+                "adresse": v["adresse"],
+                "precision": PRECISION_M.get(typ, PRECISION_M["street"]),
+            })
+    if candidats:
+        candidats.sort(key=lambda c: (not c["numero"], not c["bonne_commune"],
+                                      c["proximite"], not c["adresse"], -c["score"]))
+        meilleur = candidats[0]
+        return resultat(meilleur["lat"], meilleur["lon"], meilleur["precision"],
+                        meilleur["label"], "adresse")
 
     # 2. un quartier nommé
     for cle, (nom, lat, lon), m in occurrences(t_norm, geo["quartiers"]):
