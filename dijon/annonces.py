@@ -471,6 +471,9 @@ def deplie(captures):
                     "type": type_annonce(at.get("real_estate_type")),
                     "ville": a.get("ville"),
                     "lat_annonceur": reel(a.get("lat")), "lon_annonceur": reel(a.get("lon")),
+                    # Une ligne de recherche ne porte pas la description : sa
+                    # position ne pourra jamais dépasser la commune.
+                    "detail": False,
                 })
         else:
             out.append({
@@ -480,6 +483,7 @@ def deplie(captures):
                 "capture": (c.get("capture") or "")[:10],
                 "prix": None, "surface": None, "pieces": None, "type": None,
                 "ville": None, "lat_annonceur": None, "lon_annonceur": None,
+                "detail": True,
             })
     return out
 
@@ -529,8 +533,9 @@ def diagnostic(annonce, geo):
     com = [nom for _, (nom, _, _), _ in occurrences(t_norm, geo["communes"])]
     qua = [nom for _, (nom, _, _), _ in occurrences(t_norm, geo["quartiers"])]
     rep = [nom for _, (nom, _, _), _ in occurrences(t_norm, geo["reperes"])]
+    source = "annonce ouverte" if annonce.get("detail") else "ligne de recherche seule"
     log(f"  ── {annonce['titre'][:60]}")
-    log(f"     texte : {len(texte)} caractères")
+    log(f"     texte : {len(texte)} caractères  ({source})")
     log(f"     début : {texte[:150].replace(chr(10), ' ⏎ ')}")
     log(f"     voies : {[x['libelle'] for x in v] or '—'}")
     log(f"     communes : {com or '—'} · quartiers : {qua or '—'} · repères : {rep or '—'}")
@@ -542,7 +547,9 @@ PRECISION_FINE = 200          # au-delà, l'annonce mérite d'être ouverte
 
 def ecrit_a_preciser(annonces):
     """Page de liens vers les annonces encore imprécises, à ouvrir puis capturer."""
-    floues = [a for a in annonces if a["precision"] > PRECISION_FINE]
+    # Une annonce déjà ouverte a livré tout ce qu'elle avait : la redemander
+    # ferait refaire un travail sans effet.
+    floues = [a for a in annonces if a["precision"] > PRECISION_FINE and not a.get("detail")]
     if not floues:
         if os.path.exists(A_PRECISER):
             os.remove(A_PRECISER)
@@ -612,7 +619,7 @@ def main():
     # de recherche porte le prix, la surface et la position de l'annonceur, que la
     # page de l'annonce, elle, ne donne pas sous forme structurée.
     COMPLETABLES = ("prix", "surface", "pieces", "type", "ville",
-                    "lat_annonceur", "lon_annonceur", "titre", "site", "capture")
+                    "lat_annonceur", "lon_annonceur", "titre", "site", "capture", "detail")
     par_url = {}
     for a in brutes:
         cle = a.get("url") or id(a)
@@ -672,7 +679,7 @@ def main():
             a.update(lat=round(pos["lat"], 5), lon=round(pos["lon"], 5),
                      precision=pos["precision"], indice=pos["indice"], source=pos["source"],
                      commune=pos.get("commune"), declaree=c["ville"],
-                     conflit=bool(pos.get("conflit")))
+                     conflit=bool(pos.get("conflit")), detail=bool(c.get("detail")))
             annonces.append(a)
             if a["conflit"]:
                 conflits += 1
@@ -702,10 +709,16 @@ def main():
     log(f"OK → {OUTPUT} : {len(annonces)} annonce(s) placée(s), {sans_position} sans position.")
     for prec in sorted(par_precision):
         log(f"  ±{prec:>4} m : {par_precision[prec]} annonce(s)")
+    muettes = [a for a in annonces
+               if a["precision"] > PRECISION_FINE and a.get("detail")]
+    if muettes:
+        log(f"  {len(muettes)} annonce(s) ouverte(s) ne donnent aucune rue : "
+            f"leur description n'en cite pas. Rien de plus à en tirer.")
     n_floues = ecrit_a_preciser(annonces)
     if n_floues:
-        log(f"  {n_floues} annonce(s) gagneraient à être ouvertes une à une : "
-            f"voir {A_PRECISER}")
+        log(f"  {n_floues} annonce(s) restent à ouvrir une à une : voir {A_PRECISER}")
+    elif muettes:
+        log(f"  Toutes les autres ont été ouvertes : {A_PRECISER} est vide.")
 
 
 if __name__ == "__main__":
