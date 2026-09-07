@@ -66,8 +66,10 @@ WOOD_MIN_AREA_M2 = 50_000          # 5 ha pour les bois/forêts
 # Prix (DVF)
 DVF_YEARS = [2023, 2024, 2025]
 DVF_DEPARTEMENT = "21"
-DVF_RADIUS_M = 500
-DVF_RADIUS_FALLBACK_M = 1000
+# Rayons essayés dans l'ordre autour de chaque case : on s'élargit tant qu'on
+# n'a pas DVF_MIN_SALES ventes. Le rayon retenu est affiché dans la carte, une
+# médiane sur 2,5 km ne valant pas une médiane sur 500 m.
+DVF_RADII_M = [500, 1000, 1500, 2500]
 DVF_MIN_SALES = 5
 
 # URLs
@@ -197,11 +199,24 @@ def element_center(el):
     return None
 
 
+# Des objets OSM cumulent un shop=* avec un amenity=* qui décrit leur vraie
+# nature : l'auto-école Campus, à Dijon, est taguée shop=convenience *et*
+# amenity=driving_school. On écarte ces cas, en gardant les cumuls légitimes
+# (boutique de station-service, point poste, café d'une boulangerie).
+AMENITY_COMPATIBLE = {"fuel", "post_office", "cafe", "restaurant", "fast_food",
+                      "ice_cream", "marketplace"}
+
+
 def parse_pois(elements):
     """→ dict catégorie → DataFrame(lat, lon, name)."""
     cats = {"s": [], "g": [], "b": []}
+    ecartes = 0
     for el in elements:
         t = el.get("tags", {})
+        amenity = t.get("amenity")
+        if amenity and amenity not in AMENITY_COMPATIBLE:
+            ecartes += 1
+            continue
         if "shop" in t and t["shop"] in ("supermarket", "convenience"):
             cat = "s"
         elif t.get("shop") == "bakery":
@@ -215,6 +230,8 @@ def parse_pois(elements):
             continue
         name = t.get("name") or t.get("brand") or {"s": "Supérette", "g": "Salle de sport", "b": "Boulangerie"}[cat]
         cats[cat].append((c[0], c[1], name))
+    if ecartes:
+        log(f"  écartés (amenity incompatible avec le commerce) : {ecartes}")
     return {k: pd.DataFrame(v, columns=["lat", "lon", "name"]) for k, v in cats.items()}
 
 
@@ -526,11 +543,12 @@ def price_per_cell(grid_xy, sales):
     n = len(grid_xy)
     price = np.full(n, np.nan)
     count = np.zeros(n, dtype=int)
+    radius_used = np.zeros(n, dtype=int)
     if len(sales) == 0:
-        return price, count
+        return price, count, radius_used
     tree = cKDTree(to_xy(sales["lat"], sales["lon"]))
     ppm2 = sales["ppm2"].to_numpy()
-    for radius in (DVF_RADIUS_M, DVF_RADIUS_FALLBACK_M):
+    for radius in DVF_RADII_M:
         todo = np.where(np.isnan(price))[0]
         if not len(todo):
             break
@@ -539,7 +557,9 @@ def price_per_cell(grid_xy, sales):
             if len(cand) >= DVF_MIN_SALES:
                 price[k] = np.median(ppm2[cand])
                 count[k] = len(cand)
-    return price, count
+                radius_used[k] = radius
+        log(f"  rayon {radius} m : {int((~np.isnan(price)).sum())}/{n} cases estimées")
+    return price, count, radius_used
 
 
 def r1(x):
@@ -575,7 +595,7 @@ def main():
     bm, bidx = nearest_minutes(grid_xy, to_xy(pois["b"]["lat"], pois["b"]["lon"]))
     pm, pidx = nearest_minutes(grid_xy, green_xy)
     pidx = np.where(pidx >= 0, green_owner[np.maximum(pidx, 0)], -1) if len(green_owner) else pidx
-    price, nsales = price_per_cell(grid_xy, sales)
+    price, nsales, prad = price_per_cell(grid_xy, sales)
 
     # Filtrage des cases sans intérêt (loin de tout)
     stack = np.column_stack((np.nan_to_num(tw, nan=1e9), sm, gm, bm, pm))
@@ -592,7 +612,7 @@ def main():
             r1(gm[k]), int(gidx[k]),
             r1(bm[k]), int(bidx[k]),
             r1(pm[k]), int(pidx[k]),
-            None if math.isnan(price[k]) else int(price[k]), int(nsales[k]),
+            None if math.isnan(price[k]) else int(price[k]), int(nsales[k]), int(prad[k]),
         ])
 
     valid_prices = price[~np.isnan(price)]
@@ -607,7 +627,7 @@ def main():
         "price_p90": int(np.percentile(valid_prices, 90)) if len(valid_prices) else None,
         "centre": list(CENTRE_POINTS.keys()),
         "fields": ["lat", "lon", "t_walk", "t_ff", "t_idx", "s_min", "s_idx", "g_min", "g_idx",
-                   "b_min", "b_idx", "p_min", "p_idx", "price", "n_sales"],
+                   "b_min", "b_idx", "p_min", "p_idx", "price", "n_sales", "p_rad"],
     }
     data = {
         "meta": meta,
