@@ -30,9 +30,16 @@
   button { padding: 6px 10px; border: 1px solid #c9ced4; background: #fff; border-radius: 4px; font: inherit; cursor: pointer; }
   button:hover { background: #f1f3f5; }
   .radio { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
-  .poi { width: 22px; height: 22px; line-height: 21px; text-align: center; font-size: 12px;
-         background: #fff; border: 1px solid #b9bec4; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,.28); }
-  .poi-on { border: 2px solid #111; line-height: 19px; box-shadow: 0 0 0 4px rgba(17,17,17,.22); }
+  /* Glyphes pleins, sans pastille. Le halo blanc est un filtre qui épouse la
+     forme : sans lui, un chariot noir sur une case rouge foncé disparaît. */
+  .poi { width: 20px; height: 20px; transition: opacity .12s, transform .12s;
+         filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 1px #fff) drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
+  .poi svg { display: block; fill: currentColor; }
+  .poi-on { transform: scale(1.4);
+            filter: drop-shadow(0 0 1px #fff) drop-shadow(0 0 1px #fff)
+                    drop-shadow(0 0 1.5px #111) drop-shadow(0 0 1.5px #111); }
+  .poi-dim { opacity: .5; }
+  .cats svg { vertical-align: -3px; }
   .cats { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
   .cats label { display: flex; align-items: center; gap: 6px; }
   .legend { height: 10px; border-radius: 3px; background: linear-gradient(90deg, hsl(0 75% 45%), hsl(60 75% 45%), hsl(120 75% 40%)); margin: 6px 0 2px; }
@@ -247,12 +254,32 @@ function showPopup(c, latlng) {
 // ---------- Repères ----------
 // Les catégories sont indexées comme les critères : la case retient un repère
 // par catégorie (t_idx, s_idx…), qu'on peut donc entourer quand on la clique.
+// Glyphes dessinés en aplat : la couleur vient de `color`, pas du dessin, ce
+// qu'aucun emoji ne permet. Détails intérieurs en blanc explicite.
+const GLYPHES = {
+  t: '<rect x="4" y="2" width="16" height="15" rx="3"/><rect x="6.5" y="5" width="11" height="5.5" rx="1" fill="#fff"/>'
+   + '<circle cx="8" cy="14" r="1.3" fill="#fff"/><circle cx="16" cy="14" r="1.3" fill="#fff"/>'
+   + '<rect x="5.5" y="17" width="3" height="4" rx="1"/><rect x="15.5" y="17" width="3" height="4" rx="1"/>',
+  s: '<polygon points="1,2 4.2,2 5.1,5 7.2,14 5.2,14.5"/><polygon points="5.6,6 22,6 20,13.6 7.4,13.6"/>'
+   + '<circle cx="9" cy="19.5" r="1.9"/><circle cx="18" cy="19.5" r="1.9"/><rect x="7" y="14.4" width="12.5" height="1.8" rx=".9"/>',
+  b: '<g transform="rotate(-38 12 12)"><rect x="9.2" y="2.2" width="5.6" height="19.6" rx="2.8"/>'
+   + '<rect x="9.9" y="6" width="4.2" height="1.5" rx=".75" fill="#fff"/>'
+   + '<rect x="9.9" y="11.2" width="4.2" height="1.5" rx=".75" fill="#fff"/>'
+   + '<rect x="9.9" y="16.4" width="4.2" height="1.5" rx=".75" fill="#fff"/></g>',
+  g: '<rect x="6" y="10.4" width="12" height="3.2" rx=".9"/><rect x="3" y="6.6" width="3.6" height="10.8" rx="1.2"/>'
+   + '<rect x="17.4" y="6.6" width="3.6" height="10.8" rx="1.2"/><rect x=".8" y="9" width="2.2" height="6" rx=".9"/>'
+   + '<rect x="21" y="9" width="2.2" height="6" rx=".9"/>',
+  p: '<rect x="10.7" y="13" width="2.6" height="8.5" rx=".8"/><circle cx="12" cy="7.4" r="5"/>'
+   + '<circle cx="7.6" cy="10.8" r="3.9"/><circle cx="16.4" cy="10.8" r="3.9"/>',
+};
+const glyphe = (k, px) => `<svg viewBox="0 0 24 24" width="${px}" height="${px}">${GLYPHES[k]}</svg>`;
+
 const CATS = [
-  { k: 't', emoji: '\u{1F68B}', label: 'Arrêts' },
-  { k: 's', emoji: '\u{1F6D2}', label: 'Supérettes' },
-  { k: 'b', emoji: '\u{1F950}', label: 'Boulangeries' },
-  { k: 'g', emoji: '\u{1F3CB}', label: 'Salles de sport' },
-  { k: 'p', emoji: '\u{1F333}', label: 'Parcs' },
+  { k: 't', couleur: '#6d28d9', label: 'Arrêts' },
+  { k: 's', couleur: '#111827', label: 'Supérettes' },
+  { k: 'b', couleur: '#92400e', label: 'Boulangeries' },
+  { k: 'g', couleur: '#1d4ed8', label: 'Salles de sport' },
+  { k: 'p', couleur: '#15803d', label: 'Parcs' },
 ];
 // [nom, lat, lon] pour tout le monde, y compris les arrêts dont data.js donne plus.
 // data.js d'avant cette version ne donnait que les noms : on les accepte, sans
@@ -269,9 +296,10 @@ const poiLayer = L.layerGroup().addTo(map);
 const catOn = { t: true, s: true, b: true, g: true, p: true };
 let retenus = null;   // repères de la case cliquée, + son point
 
-const poiIcon = (emoji, on) => L.divIcon({
-  className: '', iconSize: [22, 22], iconAnchor: [11, 11],
-  html: `<div class="poi${on ? ' poi-on' : ''}">${emoji}</div>`,
+const poiIcon = (cat, on, attenue) => L.divIcon({
+  className: '', iconSize: [20, 20], iconAnchor: [10, 10],
+  html: `<div class="poi${on ? ' poi-on' : ''}${attenue ? ' poi-dim' : ''}" style="color:${cat.couleur}">`
+      + `${glyphe(cat.k, 20)}</div>`,
 });
 
 function renderPois() {
@@ -286,8 +314,10 @@ function renderPois() {
       const on = i === vise;
       // Un repère retenu reste visible même dézoomé : c'est la réponse à la question posée.
       if (!on && (!catOn[cat.k] || z < POI_ZOOM || !vue.contains([p[1], p[2]]))) continue;
+      // Une sélection en cours efface les autres sans les cacher : ce qui a été
+      // retenu doit ressortir, le reste doit rester lisible en fond.
       poiLayer.addLayer(
-        L.marker([p[1], p[2]], { icon: poiIcon(cat.emoji, on), zIndexOffset: on ? 1000 : 0 })
+        L.marker([p[1], p[2]], { icon: poiIcon(cat, on, !!retenus && !on), zIndexOffset: on ? 1000 : 0 })
           .bindPopup(`<b>${esc(p[0])}</b>${p[3] ? '<br>' + esc(p[3]) : ''}`));
     }
     if (retenus && vise >= 0 && pts[vise] && pts[vise][1] != null) {
@@ -299,7 +329,8 @@ function renderPois() {
 
 const cats = document.getElementById('cats');
 cats.innerHTML = CATS.map(c =>
-  `<label><input type="checkbox" data-cat="${c.k}" checked> ${c.emoji} ${c.label}</label>`).join('');
+  `<label><input type="checkbox" data-cat="${c.k}" checked>`
+  + `<span style="color:${c.couleur}">${glyphe(c.k, 15)}</span> ${c.label}</label>`).join('');
 cats.addEventListener('change', e => {
   catOn[e.target.dataset.cat] = e.target.checked;
   renderPois();
