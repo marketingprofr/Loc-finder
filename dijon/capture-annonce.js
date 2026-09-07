@@ -75,18 +75,53 @@
       .replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').slice(0, 20000);
   }
 
-  // Du plus précis au plus large. #readme-content est le conteneur de la
-  // description sur Leboncoin ; les suivants couvrent les autres sites.
-  var CIBLES = ['#readme-content', '[data-qa-id=adview_description_container]',
-                '[itemprop=description]', 'main', 'article', '[role=main]'];
+  // Une annonce est répartie sur plusieurs blocs : les caractéristiques d'un
+  // côté — prix, surface, pièces, commune — la description libre de l'autre.
+  // On les prend tous, au lieu de retenir le premier venu et de perdre le reste.
+  var BLOCS = ['adview_spotlight_description_container', 'readme-content',
+               'adview_description_container'];
+  // Pour les sites qui ne portent aucun de ces noms.
+  var GENERIQUES = ['[itemprop=description]', 'main', 'article', '[role=main]'];
+
+  // Le même nom peut être porté par un id, un attribut de test ou une classe :
+  // on essaie les trois plutôt que de parier sur l'un d'eux.
+  function conteneur(nom) {
+    var essais = ['#' + nom, '[data-qa-id="' + nom + '"]', '[data-test-id="' + nom + '"]',
+                  '[data-testid="' + nom + '"]', '.' + nom];
+    for (var i = 0; i < essais.length; i++) {
+      try {
+        var el = document.querySelector(essais[i]);
+        if (el) return el;
+      } catch (e) { /* sélecteur refusé, on passe */ }
+    }
+    return null;
+  }
 
   function description() {
-    for (var i = 0; i < CIBLES.length; i++) {
-      var el = null;
-      try { el = document.querySelector(CIBLES[i]); } catch (e) { continue; }
-      if (el && (el.innerText || '').trim().length > 40) {
-        return { selecteur: CIBLES[i], texte: tronque(el.innerText) };
+    var pris = [], morceaux = [], noms = [];
+    function ajoute(el, nom) {
+      if (!el) return;
+      var txt = (el.innerText || '').trim();
+      if (txt.length < 20) return;
+      // Deux blocs imbriqués donneraient deux fois le même texte.
+      for (var j = 0; j < pris.length; j++) {
+        if (pris[j].contains(el) || el.contains(pris[j])) return;
       }
+      pris.push(el); morceaux.push(txt); noms.push(nom);
+    }
+    for (var i = 0; i < BLOCS.length; i++) ajoute(conteneur(BLOCS[i]), BLOCS[i]);
+    if (!morceaux.length) {
+      for (var k = 0; k < GENERIQUES.length; k++) {
+        var el = null;
+        try { el = document.querySelector(GENERIQUES[k]); } catch (e) { continue; }
+        if (el && (el.innerText || '').trim().length > 40) {
+          ajoute(el, GENERIQUES[k]);
+          break;
+        }
+      }
+    }
+    if (morceaux.length) {
+      return { selecteur: noms.join(' + '), texte: tronque(morceaux.join('\n')) };
     }
     return { selecteur: 'page entière', texte: tronque(document.body.innerText) };
   }

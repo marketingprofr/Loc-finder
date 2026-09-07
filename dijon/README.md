@@ -39,6 +39,12 @@ navigateur et faire glisser les deux boutons dans la barre de favoris
   dans le bloc « annonces similaires », dont les surfaces et les rues se
   mêleraient à celles du bien.
 
+- `inspecter-page.js` — outil de mise au point. Sur une page d'annonce, relève
+  les blocs identifiables et la taille de leur texte. À utiliser quand une
+  capture rate ou ramène autre chose que l'annonce : le relevé dit quels
+  sélecteurs écrire, ce que le HTML livré par le site ne permet pas de savoir
+  puisque la page est construite en JavaScript.
+
 Puis `python annonces.py` : les captures sont rangées dans `captures/`, et
 `annonces.js` est écrit à côté de `data.js`.
 

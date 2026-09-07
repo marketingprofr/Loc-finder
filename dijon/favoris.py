@@ -21,6 +21,9 @@ SOURCES = [
      "Sur une page de résultats, capture toutes les annonces affichées."),
     ("capture-annonce.js", "Capturer l’annonce",
      "Sur une annonce ouverte, capture sa description entière."),
+    ("inspecter-page.js", "Inspecter la page",
+     "Outil de mise au point : relève les blocs de la page et leurs identifiants, "
+     "à envoyer quand une capture rate quelque chose."),
 ]
 SORTIE = "favoris.html"
 
