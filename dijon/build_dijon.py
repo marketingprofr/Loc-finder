@@ -72,8 +72,19 @@ DVF_MIN_SALES = 5
 
 # URLs
 GTFS_URL = "https://www.data.gouv.fr/api/1/datasets/r/e0dbd217-15cd-4e28-9459-211a27511a34"
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 DVF_URL = "https://files.data.gouv.fr/geo-dvf/latest/csv/{year}/departements/{dep}.csv.gz"
+
+# Miroirs Overpass, essayés dans l'ordre : le principal est souvent saturé.
+OVERPASS_URLS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+]
+
+# Un User-Agent explicite est indispensable : Overpass répond 406 aux clients
+# qui gardent celui de requests par défaut, et la politique d'usage d'OSM
+# demande de s'identifier.
+USER_AGENT = "loc-finder/1.0 (+https://github.com/marketingprofr/Loc-finder)"
 
 CACHE_DIR = "cache"
 OUTPUT = "data.js"
@@ -119,12 +130,13 @@ def download(url, cache_name, data=None):
         with open(path, "rb") as f:
             return f.read()
     log(f"  téléchargement : {url}")
+    headers = {"User-Agent": USER_AGENT}
     for attempt in range(3):
         try:
             if data is None:
-                r = requests.get(url, timeout=600)
+                r = requests.get(url, timeout=600, headers=headers)
             else:
-                r = requests.post(url, data=data, timeout=600)
+                r = requests.post(url, data=data, timeout=600, headers=headers)
             r.raise_for_status()
             break
         except Exception as e:  # noqa
@@ -158,7 +170,15 @@ OVERPASS_QUERY = """
 
 def fetch_osm():
     bbox = f"{BBOX[0]},{BBOX[1]},{BBOX[2]},{BBOX[3]}"
-    raw = download(OVERPASS_URL, "overpass.json", data={"data": OVERPASS_QUERY.format(bbox=bbox)})
+    query = {"data": OVERPASS_QUERY.format(bbox=bbox)}
+    for i, url in enumerate(OVERPASS_URLS):
+        try:
+            raw = download(url, "overpass.json", data=query)
+            break
+        except Exception as e:  # noqa
+            if i == len(OVERPASS_URLS) - 1:
+                raise
+            log(f"  {url} indisponible ({e}), essai du miroir suivant")
     return json.loads(raw)["elements"]
 
 
