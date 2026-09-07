@@ -611,6 +611,7 @@ def deplie(captures):
                     # Une ligne de recherche ne porte pas la description : sa
                     # position ne pourra jamais dépasser la commune.
                     "detail": False,
+                    "propre": True,
                 })
         else:
             # Une capture d'annonce lit les blocs de caractéristiques de la
@@ -629,6 +630,9 @@ def deplie(captures):
                 "ville": c.get("ville"),
                 "lat_annonceur": reel(c.get("lat")), "lon_annonceur": reel(c.get("lon")),
                 "detail": True,
+                # Les captures faites avant que le favori ne se limite aux blocs
+                # de l'annonce portent aussi le texte des annonces voisines.
+                "propre": c.get("source") == "blocs de l’annonce",
             })
     return out
 
@@ -775,12 +779,24 @@ def main():
             par_url[cle] = a
             continue
         b = par_url[cle]
-        garde, autre = (a, b) if len(a["texte"]) > len(b["texte"]) else (b, a)
+        # Le texte le plus long l'emporte, sauf si l'autre est propre et pas
+        # lui : une capture de page entière est plus longue justement parce
+        # qu'elle contient les biens voisins.
+        if a["propre"] != b["propre"]:
+            garde, autre = (a, b) if a["propre"] else (b, a)
+        else:
+            garde, autre = (a, b) if len(a["texte"]) > len(b["texte"]) else (b, a)
         for champ in COMPLETABLES:
             if not garde.get(champ):
                 garde[champ] = autre.get(champ)
         par_url[cle] = garde
     log(f"  {len(par_url)} annonce(s) distincte(s) sur {len(brutes)} ligne(s) capturée(s)")
+    vieilles = sum(1 for a in par_url.values() if a["detail"] and not a["propre"])
+    if vieilles:
+        log(f"  {vieilles} capture(s) d'annonce datent d'avant la correction et "
+            f"contiennent le texte des annonces voisines de la page.")
+        log(f"  Les recapturer, ou supprimer leur fichier dans "
+            f"{os.path.basename(CAPTURES_DIR)}/, améliorera leur placement.")
 
     log("Référentiel de lieux…")
     geo = charge_geo()
