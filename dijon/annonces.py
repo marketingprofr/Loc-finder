@@ -18,6 +18,7 @@ Chaque annonce sort avec une précision honnête : un numéro de rue ne vaut pas
 un nom de commune, et la carte les dessine différemment.
 """
 import glob
+import html
 import json
 import math
 import os
@@ -203,6 +204,12 @@ def charge_geo(chemin=DATA_JS):
     reperes += [p for p in data.get("parks", [])
                 if isinstance(p, (list, tuple)) and p[0].lower() not in ("parc", "bois", "jardin")]
     geo["reperes"] = table(reperes, 5)
+    # Un arrêt de bus porte souvent le nom de sa commune — l'arrêt LONGVIC, à
+    # Longvic. Le retenir comme repère placerait le bien sur un abribus, annoncé
+    # à 400 m près, alors que le seul signal est le nom de la commune.
+    for cle in list(geo["communes"]):
+        geo["reperes"].pop(cle, None)
+        geo["quartiers"].pop(cle, None)
     if not geo["communes"]:
         log("  data.js ne contient pas de communes : relancer build_dijon.py "
             "pour pouvoir corriger une localisation déclarée")
@@ -529,6 +536,61 @@ def diagnostic(annonce, geo):
     log(f"     communes : {com or '—'} · quartiers : {qua or '—'} · repères : {rep or '—'}")
 
 
+A_PRECISER = "a_preciser.html"
+PRECISION_FINE = 200          # au-delà, l'annonce mérite d'être ouverte
+
+
+def ecrit_a_preciser(annonces):
+    """Page de liens vers les annonces encore imprécises, à ouvrir puis capturer."""
+    floues = [a for a in annonces if a["precision"] > PRECISION_FINE]
+    if not floues:
+        if os.path.exists(A_PRECISER):
+            os.remove(A_PRECISER)
+        return 0
+    # Le meilleur rapport au m² d'abord : c'est par là qu'on a envie de creuser.
+    floues.sort(key=lambda a: (a["prix"] / a["surface"]) if a["prix"] and a["surface"] else 1e9)
+    lignes = []
+    for a in floues:
+        ppm2 = f"{a['prix'] / a['surface']:.0f} €/m²" if a["prix"] and a["surface"] else "—"
+        lignes.append(
+            f'<tr><td><a href="{html.escape(a["url"] or "#", quote=True)}" target="_blank" '
+            f'rel="noopener">{html.escape(a["titre"] or "annonce")}</a></td>'
+            f'<td>{fmt_eur(a["prix"])}</td><td>{ppm2}</td>'
+            f'<td>{html.escape(str(a.get("commune") or "—"))}</td>'
+            f'<td>±{a["precision"]} m</td></tr>')
+    page = f"""<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8">
+<title>Annonces à préciser</title><style>
+body {{ font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; max-width:60em;
+       margin:32px auto; padding:0 24px; color:#1f2328; }}
+h1 {{ font-size:21px; margin:0 0 4px; }} .sub {{ color:#6b7280; margin:0 0 22px; }}
+table {{ border-collapse:collapse; width:100%; }}
+th,td {{ text-align:left; padding:7px 10px; border-bottom:1px solid #e2e5e9; }}
+th {{ font-size:13px; color:#6b7280; font-weight:600; }}
+td:nth-child(2),td:nth-child(3),td:nth-child(5) {{ text-align:right;
+       font-variant-numeric:tabular-nums; white-space:nowrap; }}
+ol {{ background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:14px 18px 14px 38px;
+      font-size:14px; }}
+</style></head><body>
+<h1>{len(floues)} annonces à préciser</h1>
+<p class="sub">Situées à la commune ou au quartier près. Leur description contient
+souvent une rue, mais Leboncoin ne la met pas dans ses pages de résultats.</p>
+<ol>
+  <li>Ouvrir celles qui vous intéressent (clic du milieu, ou Ctrl + clic, pour un nouvel onglet).</li>
+  <li>Sur chacune, cliquer le favori <b>Capturer l'annonce</b>.</li>
+  <li>Relancer <code>python annonces.py</code>. Elles descendront à ±150 m, ou ±60 m avec un numéro.</li>
+</ol>
+<table><tr><th>Annonce</th><th>Prix</th><th>Au m²</th><th>Commune</th><th>Précision</th></tr>
+{''.join(lignes)}</table></body></html>
+"""
+    with open(A_PRECISER, "w", encoding="utf-8") as f:
+        f.write(page)
+    return len(floues)
+
+
+def fmt_eur(v):
+    return f"{v:,.0f} €".replace(",", " ") if v else "—"
+
+
 def main():
     avec_geo = "--sans-geo" not in sys.argv
     mode_diag = "--diagnostic" in sys.argv
@@ -640,9 +702,10 @@ def main():
     log(f"OK → {OUTPUT} : {len(annonces)} annonce(s) placée(s), {sans_position} sans position.")
     for prec in sorted(par_precision):
         log(f"  ±{prec:>4} m : {par_precision[prec]} annonce(s)")
-    if par_precision.get(PRECISION_M["municipality"]) or par_precision.get(PRECISION_M["annonceur"]):
-        log("  Les moins précises se resserrent en ouvrant l'annonce et en la recapturant :")
-        log("  la description entière contient souvent une rue ou un repère.")
+    n_floues = ecrit_a_preciser(annonces)
+    if n_floues:
+        log(f"  {n_floues} annonce(s) gagneraient à être ouvertes une à une : "
+            f"voir {A_PRECISER}")
 
 
 if __name__ == "__main__":

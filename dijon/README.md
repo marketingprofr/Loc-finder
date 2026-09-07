@@ -77,6 +77,13 @@ longs l'emportent, sans quoi « Dijon » se reconnaîtrait dans
 Quand le texte contredit la déclaration, l'annonce est replacée et le signale,
 dans la sortie du script comme dans son popup sur la carte.
 
+Leboncoin ne met pas la description dans ses pages de résultats : la capture de
+recherche donne le prix, la surface et la commune, jamais la rue. Le script
+écrit donc `a_preciser.html`, la liste des annonces restées à la commune ou au
+quartier près, du meilleur prix au m² au moins bon. Il suffit d'ouvrir celles
+qui valent le coup et de cliquer le second favori sur chacune ; elles
+descendent alors à 150 m, ou 60 m si l'annonce donne un numéro.
+
 La carte dessine un point quand la position vaut 150 m, la zone d'incertitude
 au-delà. `--sans-geo` traite les captures sans appel réseau.
 
