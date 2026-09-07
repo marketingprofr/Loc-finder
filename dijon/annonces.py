@@ -609,13 +609,21 @@ def deplie(captures):
                     "detail": False,
                 })
         else:
+            # Depuis qu'elle lit __NEXT_DATA__, une capture d'annonce rapporte
+            # aussi les champs structurés. Ils valent mieux que ce qu'une
+            # expression régulière tire du texte.
+            at = c.get("attributs") or {}
             out.append({
                 "url": c.get("url"), "site": c.get("site"),
                 "titre": (c.get("titre") or "").strip()[:120],
                 "texte": c.get("texte") or "",
                 "capture": (c.get("capture") or "")[:10],
-                "prix": None, "surface": None, "pieces": None, "type": None,
-                "ville": None, "lat_annonceur": None, "lon_annonceur": None,
+                "prix": entier(c.get("prix")),
+                "surface": reel(at.get("square")),
+                "pieces": entier(at.get("rooms")),
+                "type": type_annonce(at.get("real_estate_type")),
+                "ville": c.get("ville"),
+                "lat_annonceur": reel(c.get("lat")), "lon_annonceur": reel(c.get("lon")),
                 "detail": True,
             })
     return out

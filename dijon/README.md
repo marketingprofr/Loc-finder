@@ -33,8 +33,11 @@ navigateur et faire glisser les deux boutons dans la barre de favoris
   annonces affichées d'un seul clic : lien, prix, surface, pièces, description.
   C'est le point d'entrée normal : ouvrez votre recherche habituelle, faites
   défiler, cliquez le favori.
-- `capture-annonce.js` — sur **une annonce ouverte**, capture sa description
-  entière. À utiliser pour resserrer la position de celles qui vous intéressent.
+- `capture-annonce.js` — sur **une annonce ouverte**, capture sa description.
+  À utiliser pour resserrer la position de celles qui vous intéressent. Il ne
+  prend que l'annonce affichée : une page en contient une dizaine d'autres,
+  dans le bloc « annonces similaires », dont les surfaces et les rues se
+  mêleraient à celles du bien.
 
 Puis `python annonces.py` : les captures sont rangées dans `captures/`, et
 `annonces.js` est écrit à côté de `data.js`.

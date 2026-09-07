@@ -26,13 +26,24 @@ SORTIE = "favoris.html"
 
 
 def ligne_favori(chemin):
-    """La ligne `// javascript:…` en bas du fichier, sans son préfixe de commentaire."""
+    """Le script, réduit à une ligne `javascript:…`.
+
+    La minification est faite ici plutôt que recopiée à la main dans le fichier
+    source : une ligne de trois mille caractères recopiée dérive de l'original
+    au premier changement, sans que rien ne le signale.
+
+    On ne retire que les lignes entièrement commentées : découper les `//` en
+    fin de ligne casserait les URL et les expressions régulières. Toutes les
+    instructions se terminant par un point-virgule ou une accolade, les joindre
+    par une espace est sans risque.
+    """
+    lignes = []
     with io.open(chemin, encoding="utf-8") as f:
         for ligne in f:
-            l = ligne.strip()
-            if l.startswith("// javascript:"):
-                return l[3:]
-    raise SystemExit(f"{chemin} : ligne « // javascript: » introuvable")
+            t = ligne.strip()
+            if t and not t.startswith("//"):
+                lignes.append(re.sub(r"\s*/\*.*?\*/\s*$", "", t))
+    return "javascript:" + " ".join(l for l in lignes if l)
 
 
 def main():
