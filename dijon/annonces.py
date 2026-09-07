@@ -79,7 +79,16 @@ SEP = "[ \u00a0\u202f.]"           # espace, insécable, fine insécable, point 
 NOMBRE_FR = rf"\d{{1,3}}(?:{SEP}?\d{{3}})+"
 RE_PRIX_LABEL = re.compile(rf"prix[^\d€\n]{{0,20}}({NOMBRE_FR})", re.I)
 RE_PRIX = re.compile(rf"({NOMBRE_FR})\s*€")
-RE_SURFACE = re.compile(r"(\d{2,4}(?:[.,]\d+)?)\s*m\s*(?:²|2\b|\^2)", re.I)
+M2 = r"m\s*(?:²|2\b|\^2)"
+RE_SURFACE = re.compile(rf"(\d{{2,4}}(?:[.,]\d+)?)\s*{M2}", re.I)
+# La surface habitable est celle qui accompagne le nombre de pièces — « 6 pièces
+# 100 m² » — ou qui se dit habitable. S'en remettre au plus grand nombre de m²
+# du texte revient à retenir le terrain dès que le mot « terrain » en est loin.
+RE_PIECES_M2 = re.compile(rf"(?:\d+)\s*pi[eè]ces?[^\n\d]{{0,15}}(\d{{2,4}}(?:[.,]\d+)?)\s*{M2}", re.I)
+RE_M2_PIECES = re.compile(rf"(\d{{2,4}}(?:[.,]\d+)?)\s*{M2}[^\n\d]{{0,15}}(?:\d+)\s*pi[eè]ces?", re.I)
+RE_HABITABLE = re.compile(
+    rf"(?:surface\s+habitable|habitable)[^\d\n]{{0,20}}(\d{{2,4}}(?:[.,]\d+)?)\s*{M2}"
+    rf"|(\d{{2,4}}(?:[.,]\d+)?)\s*{M2}\s*habitables?", re.I)
 RE_PIECES = re.compile(r"(\d+)\s*pi[eè]ces?", re.I)
 RE_TN = re.compile(r"\b[TF](\d)\b")
 
@@ -119,15 +128,44 @@ def extrait_prix(texte):
     return None
 
 
+def _plausible(v):
+    return v is not None and SURFACE_MIN <= v <= SURFACE_MAX
+
+
 def extrait_surface(texte):
-    """Surface habitable : on écarte les m² qui suivent un mot de terrain."""
+    """Surface habitable.
+
+    On cherche d'abord celle qui est explicitement habitable, puis celle qui
+    accompagne le nombre de pièces. Ces deux formulations sont sans ambiguïté.
+    À défaut seulement, on retombe sur le plus grand nombre de m² qui ne suive
+    pas un mot de terrain — un repli qui se trompe dès que la mise en page
+    éloigne ce mot du nombre.
+    """
+    for m in RE_HABITABLE.finditer(texte):
+        v = nombre(m.group(1) or m.group(2))
+        if _plausible(v):
+            return v
+    for regex in (RE_PIECES_M2, RE_M2_PIECES):
+        valeurs = []
+        for m in regex.finditer(texte):
+            # « 4 pièces, terrain 450 m² » : le motif enjambe le mot, la valeur
+            # trouvée est celle du terrain.
+            if re.search(r"terrain|parcelle|jardin|garage|cave|balcon|terrasse",
+                         sans_accents(m.group(0))):
+                continue
+            v = nombre(m.group(1))
+            if _plausible(v):
+                valeurs.append(v)
+        if valeurs:
+            return min(valeurs)
     candidates = []
     for m in RE_SURFACE.finditer(texte):
-        avant = sans_accents(texte[max(0, m.start() - 30):m.start()])
-        if re.search(r"terrain|parcelle|jardin|cour|garage|cave|balcon|terrasse", avant):
+        avant = sans_accents(texte[max(0, m.start() - 40):m.start()])
+        if re.search(r"terrain|parcelle|jardin|cour|garage|cave|balcon|terrasse|"
+                     r"sous-sol|combles|grenier|piscine", avant):
             continue
         v = nombre(m.group(1))
-        if v is not None and SURFACE_MIN <= v <= SURFACE_MAX:
+        if _plausible(v):
             candidates.append(v)
     return max(candidates) if candidates else None
 
@@ -163,6 +201,34 @@ MARQUEURS_NEGATIFS = (r"(?:proche|pres|a proximite|aux portes|limite|acces|direc
 
 # À l'inverse, ce qui introduit l'adresse du bien lui-même.
 MARQUEURS_ADRESSE = r"(?:situee?|sise?|adresse|se trouve|implantee?|donnant|au)"
+
+# Une distance annoncée avant un lieu dit à quelle distance le bien s'en trouve.
+# On la lit pour en faire un rayon plutôt que de l'ignorer.
+RE_DISTANCE = re.compile(r"(\d{1,4})\s*(km|kilometres?|metres?|m|minutes?|min|mn)\b", re.I)
+PAS_PAR_MINUTE = 80          # marche à pied, mètres par minute
+MARGE_DISTANCE = 150         # une distance annoncée n'est jamais à vol d'oiseau
+PORTEE_MARQUEUR = 24         # au-delà, le marqueur qualifie autre chose que la voie
+DISTANCE_INUTILE = 1400      # au-delà, la commune renseigne autant
+
+
+def distance_annoncee(avant):
+    """Distance en mètres lue juste avant un lieu, ou None si indéterminable.
+
+    « à 200 m de la rue X » → 200. « à 10 minutes à pied de X » → 800.
+    « à 10 minutes de X » sans précision de mode → None : entre la marche et la
+    voiture, l'écart est d'un facteur dix.
+    """
+    dernier = None
+    for m in RE_DISTANCE.finditer(avant):
+        dernier = m
+    if not dernier:
+        return None
+    n, unite = int(dernier.group(1)), dernier.group(2).lower()
+    if unite.startswith("k"):
+        return n * 1000
+    if unite.startswith("m") and not unite.startswith("min") and not unite.startswith("mn"):
+        return n
+    return n * PAS_PAR_MINUTE if "pied" in avant[dernier.end():] else None
 # Ceux-ci, au contraire, désignent l'emplacement du bien.
 MARQUEURS_POSITIFS = (r"(?:a|sur|dans|secteur|commune de|ville de|situee? a|situe a|"
                       r"centre de|centre|quartier de|quartier|au coeur de|coeur de)")
@@ -328,14 +394,23 @@ def voies(texte):
         if len(libelle) < 9 or cle in vus:
             continue
         vus.add(cle)
-        avant = sans_accents(texte[max(0, m.start() - 30):m.start()])
+        avant = sans_accents(texte[max(0, m.start() - 45):m.start()])
+        # « À 200 m de la place Darcy, la maison est située rue Berlioz » cite les
+        # deux : un voisinage puis une adresse. C'est le marqueur le plus proche
+        # de la voie qui la qualifie, pas sa simple présence quelque part avant.
+        # Et il doit être accolé à la voie : dans « proche de Chenôve et de ses
+        # commerces, rue Berlioz », « proche » qualifie la commune, pas la rue.
+        fin = lambda motif: max((x.end() for x in re.finditer(motif, avant)), default=-10 ** 6)
+        loin = max(fin(MARQUEURS_NEGATIFS), fin(RE_DISTANCE.pattern))
+        ici = fin(MARQUEURS_ADRESSE)
+        reste = len(avant)
+        proche = loin > ici and reste - loin <= PORTEE_MARQUEUR
         out.append({
             "libelle": libelle,
             "numero": m.group("num"),
-            # « à 200 m de la rue X » situe encore, mais moins bien qu'« au 12 rue X ».
-            "proximite": bool(re.search(MARQUEURS_NEGATIFS + r"[ ,;:'’a-z]{0,14}$", avant)),
-            # « située rue X » désigne l'adresse du bien.
-            "adresse": bool(re.search(MARQUEURS_ADRESSE + r"[ ,;:'’a-z]{0,10}$", avant)),
+            "proximite": proche,
+            "distance": distance_annoncee(avant) if proche else None,
+            "adresse": ici > loin and reste - ici <= PORTEE_MARQUEUR,
         })
         if len(out) >= MAX_VOIES:
             break
@@ -383,21 +458,38 @@ def situe(texte, geo, session, commune_declaree=None):
             if not r:
                 continue
             lat, lon, typ, label, score, ville_ban = r
+            bonne_commune = (not commune
+                             or sans_accents(ville_ban) == sans_accents(commune))
+            # Une rue portant le nom d'une autre commune existe un peu partout :
+            # Dijon a une « rue de Marsannay-la-Côte » qui n'est pas à
+            # Marsannay-la-Côte. Quand le texte établit fermement la commune,
+            # une rue trouvée ailleurs est une homonymie, pas une adresse.
+            if not bonne_commune and force == "forte":
+                continue
+            precision = PRECISION_M.get(typ, PRECISION_M["street"])
+            if v["proximite"]:
+                # Le bien n'est pas à cette adresse, il est à côté : la précision
+                # affichée doit le dire. Sans distance lisible, on prend large.
+                precision = max(precision, (v["distance"] or 500) + MARGE_DISTANCE)
+                if precision > DISTANCE_INUTILE:
+                    continue
             candidats.append({
                 "lat": lat, "lon": lon, "label": label, "score": score,
-                "numero": typ == "housenumber",
-                "bonne_commune": (not commune
-                                  or sans_accents(ville_ban) == sans_accents(commune)),
+                "numero": typ == "housenumber" and not v["proximite"],
+                "bonne_commune": bonne_commune,
                 "proximite": v["proximite"],
                 "adresse": v["adresse"],
-                "precision": PRECISION_M.get(typ, PRECISION_M["street"]),
+                "precision": precision,
             })
     if candidats:
         candidats.sort(key=lambda c: (not c["numero"], not c["bonne_commune"],
                                       c["proximite"], not c["adresse"], -c["score"]))
         meilleur = candidats[0]
+        indice = meilleur["label"]
+        if meilleur["proximite"]:
+            indice = f"à proximité de {indice}"
         return resultat(meilleur["lat"], meilleur["lon"], meilleur["precision"],
-                        meilleur["label"], "adresse")
+                        indice, "voisinage" if meilleur["proximite"] else "adresse")
 
     # 2. un quartier nommé
     for cle, (nom, lat, lon), m in occurrences(t_norm, geo["quartiers"]):
