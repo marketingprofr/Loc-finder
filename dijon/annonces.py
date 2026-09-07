@@ -35,6 +35,9 @@ import requests
 
 BBOX = (47.24, 4.93, 47.40, 5.16)          # même emprise que build_dijon.py
 BIAIS = (47.3231, 5.0321)                  # Darcy, pour orienter le géocodage
+# À cette latitude un degré de longitude est plus court qu'un degré de
+# latitude : sans ce facteur, comparer des distances les fausse d'un tiers.
+COS_LAT = math.cos(math.radians(BIAIS[0]))
 
 # Les fichiers produits doivent atterrir à côté de index.html, qui les charge
 # par leur nom. Les ancrer sur le dossier du script plutôt que sur le dossier
@@ -264,7 +267,7 @@ def charge_geo(chemin=DATA_JS):
     → {"communes": {clé: (nom, lat, lon)}, "quartiers": …, "reperes": …}
     Les clés sont normalisées sans accents, pour être cherchées dans le texte.
     """
-    vide = {"communes": {}, "quartiers": {}, "reperes": {}}
+    vide = {"communes": {}, "quartiers": {}, "reperes": {}, "commune_de": {}}
     if not os.path.exists(chemin):
         log(f"  {os.path.basename(chemin)} absent : aucun référentiel de lieux")
         return vide
@@ -304,10 +307,37 @@ def charge_geo(chemin=DATA_JS):
     for cle in list(geo["communes"]):
         geo["reperes"].pop(cle, None)
         geo["quartiers"].pop(cle, None)
+    # À quelle commune appartient chaque repère. L'annonce d'une maison à
+    # Talant cite l'adresse dijonnaise de son agence : la rue est écartée parce
+    # qu'elle est à Dijon, mais l'arrêt « Trémouille » qui la borde y est aussi,
+    # et sans ce rattachement le bien atterrissait quand même à Dijon.
+    geo["commune_de"] = commune_la_plus_proche(geo)
     if not geo["communes"]:
         log("  data.js ne contient pas de communes : relancer build_dijon.py "
             "pour pouvoir corriger une localisation déclarée")
     return geo
+
+
+def commune_la_plus_proche(geo):
+    """→ {clé de quartier ou de repère : nom de la commune la plus proche}.
+
+    data.js ne donne que des centres de communes, pas leurs contours : le
+    rattachement se fait au centre le plus proche. C'est approximatif en bord
+    de commune, mais l'erreur y est d'un kilomètre, là où confondre deux
+    communes en déplace cinq.
+    """
+    centres = [(nom, lat, lon) for nom, lat, lon in geo["communes"].values()
+               if lat is not None]
+    if not centres:
+        return {}
+    rattachement = {}
+    for table in ("quartiers", "reperes"):
+        for cle, (_, lat, lon) in geo[table].items():
+            if lat is None:
+                continue
+            rattachement[cle] = min(centres, key=lambda c: (c[1] - lat) ** 2
+                                    + ((c[2] - lon) * COS_LAT) ** 2)[0]
+    return rattachement
 
 
 # Le trait d'union et l'apostrophe font partie du nom : sans les exclure des
@@ -445,6 +475,20 @@ def voies(texte):
     return out
 
 
+def commune_annoncee(brut, geo):
+    """La commune contenue dans le lieu affiché par le site.
+
+    Leboncoin écrit « Chenôve 21300 · Quartier Chenôve » ou « Talant Arandes » :
+    le nom de la commune y est, noyé dans un code postal et un quartier. Pris
+    tel quel, il ne correspondait jamais à celui lu dans le texte, et chaque
+    annonce était signalée comme replacée ailleurs.
+    """
+    if not brut:
+        return None
+    noms = [nom for _, (nom, _, _), _ in occurrences(sans_accents(brut), geo["communes"])]
+    return max(noms, key=len) if noms else brut
+
+
 def situe(texte, geo, session, commune_declaree=None):
     """Place le bien à partir des indices du texte.
 
@@ -534,6 +578,13 @@ def situe(texte, geo, session, commune_declaree=None):
     for table, base, genre in ((geo["quartiers"], PRECISION_M["quartier"], "quartier"),
                                (geo["reperes"], PRECISION_M["repere"], "repère")):
         for cle, (nom, lat, lon), m in occurrences(t_norm, table):
+            # Même règle que pour les rues : quand le texte établit fermement la
+            # commune, un lieu situé dans une autre est une homonymie ou le pied
+            # de page de l'agence, pas une indication sur le bien.
+            ailleurs = geo.get("commune_de", {}).get(cle)
+            if (commune and force == "forte" and ailleurs
+                    and sans_accents(ailleurs) != sans_accents(commune)):
+                continue
             avant = t_norm[max(0, m.start() - 45):m.start()]
             proche = bool(re.search(MARQUEURS_NEGATIFS, avant) or RE_DISTANCE.search(avant))
             precision = base
@@ -699,7 +750,8 @@ def diagnostic(annonce, geo, session=None):
     log(f"     communes : {com or '—'} · quartiers : {qua or '—'} · repères : {rep or '—'}")
 
     trouvee = commune_du_texte(t_norm, geo)
-    commune, force = (trouvee[0], trouvee[3]) if trouvee else (annonce.get("ville"), "declaree")
+    commune, force = ((trouvee[0], trouvee[3]) if trouvee
+                      else (commune_annoncee(annonce.get("ville"), geo), "declaree"))
     log(f"     commune retenue : {commune or '—'} ({force or '—'})")
 
     if not v:
@@ -876,7 +928,8 @@ def main():
             "surface": c["surface"] or extrait_surface(texte, c["titre"]),
             "pieces": c["pieces"] or extrait_pieces(texte),
         }
-        pos = situe(texte, geo, session, commune_declaree=c["ville"])
+        declaree = commune_annoncee(c["ville"], geo)
+        pos = situe(texte, geo, session, commune_declaree=declaree)
         if pos is None and c["lat_annonceur"] and c["lon_annonceur"]:
             cle = (round(c["lat_annonceur"], 4), round(c["lon_annonceur"], 4))
             centre = cle in flous
@@ -893,7 +946,7 @@ def main():
         if pos:
             a.update(lat=round(pos["lat"], 5), lon=round(pos["lon"], 5),
                      precision=pos["precision"], indice=pos["indice"], source=pos["source"],
-                     commune=pos.get("commune"), declaree=c["ville"],
+                     commune=pos.get("commune"), declaree=declaree,
                      conflit=bool(pos.get("conflit")), detail=bool(c.get("detail")))
             annonces.append(a)
             if a["conflit"]:
@@ -903,7 +956,7 @@ def main():
                 f"{str(a['prix'] or '—'):>9s} € · {ppm2:>10s}"
                 f" · ±{pos['precision']:>4} m · {pos['indice'][:36]}")
             if a["conflit"]:
-                log(f"      annonce déclarée à {c['ville']}, le texte dit {pos['commune']}")
+                log(f"      annonce déclarée à {declaree}, le texte dit {pos['commune']}")
         else:
             sans_position += 1
             log(f"  ? {a['titre'][:40]:40s} aucun indice de lieu exploitable")
