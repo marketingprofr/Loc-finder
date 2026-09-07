@@ -48,8 +48,21 @@ CENTRE_RADIUS_M = 250
 # Transport
 MAX_RIDE_MIN = 20          # temps en véhicule maxi arrêt → centre
 FREQ_WINDOW_H = (7, 20)    # fenêtre de comptage des départs (jour de semaine)
-FULL_FREQ_PER_H = 6        # ≥ 6 départs/h vers le centre → facteur fréquence = 1
+FULL_FREQ_PER_H = 6        # ≥ 6 départs/h → facteur 1 (indicatif, cf. TRAM_* ci-dessous)
 MAX_STOP_WALK_MIN = 12     # au-delà, on ne cherche plus d'arrêt
+
+# Barème « tram / bus ». Il est répété dans index.html, qui s'en sert pour
+# noter ; ici il sert à choisir, pour chaque case, l'arrêt le plus intéressant.
+# Les deux doivent rester d'accord, sinon la carte note un arrêt qui n'est pas
+# le meilleur au sens de son propre barème.
+#   points de marche  : 10 à ≤ 1 min, 0 à ≥ 10 min
+#   facteur fréquence : proportionnel, plafonné à 10 départs/h
+#   facteur trajet    : 1 à ≤ 5 min, 0,8 à 10 min, 0,4 à 20 min
+TRAM_WALK_FULL_MIN = 1
+TRAM_WALK_ZERO_MIN = 10
+TRAM_FREQ_FULL_PER_H = 10
+TRAM_RIDE_FULL_MIN = 5
+TRAM_RIDE_PER_MIN = 0.04
 
 # Marche
 WALK_SPEED_M_PER_MIN = 5000 / 60   # 5 km/h
@@ -515,17 +528,18 @@ def nearest_minutes(grid_xy, pts_xy):
 
 
 def best_stop(grid_xy, stops):
-    """Pour chaque case : meilleur arrêt à portée = max de (10 − minutes) × facteur fréquence."""
+    """Pour chaque case : l'arrêt qui maximise marche × fréquence × trajet."""
     n = len(grid_xy)
     walk = np.full(n, np.nan)
-    ff = np.full(n, np.nan)
     idx = np.full(n, -1)
     if len(stops) == 0:
-        return walk, ff, idx
+        return walk, idx
     stops_xy = to_xy(stops["stop_lat"], stops["stop_lon"])
     tree = cKDTree(stops_xy)
     r = walk_radius_m(MAX_STOP_WALK_MIN)
-    ff_all = stops["ff"].to_numpy()
+    freq_f = np.clip(stops["dph"].to_numpy() / TRAM_FREQ_FULL_PER_H, 0, 1)
+    ride_f = np.clip(1 - (stops["ride_med"].to_numpy() - TRAM_RIDE_FULL_MIN) * TRAM_RIDE_PER_MIN, 0, 1)
+    span = TRAM_WALK_ZERO_MIN - TRAM_WALK_FULL_MIN
     neighbours = tree.query_ball_point(grid_xy, r)
     for k, cand in enumerate(neighbours):
         if not cand:
@@ -533,10 +547,11 @@ def best_stop(grid_xy, stops):
         cand = np.array(cand)
         d = np.linalg.norm(stops_xy[cand] - grid_xy[k], axis=1)
         wm = walk_minutes(d)
-        score = np.maximum(0, 10 - wm) * ff_all[cand]
+        walk_pts = np.clip(10 * (TRAM_WALK_ZERO_MIN - wm) / span, 0, 10)
+        score = walk_pts * freq_f[cand] * ride_f[cand]
         j = int(np.argmax(score))
-        walk[k], ff[k], idx[k] = wm[j], ff_all[cand[j]], cand[j]
-    return walk, ff, idx
+        walk[k], idx[k] = wm[j], cand[j]
+    return walk, idx
 
 
 def price_per_cell(grid_xy, sales):
@@ -589,7 +604,7 @@ def main():
     grid_xy = build_grid()
     log(f"  {len(grid_xy)} cases de {GRID_STEP_M} m")
 
-    tw, tf, tidx = best_stop(grid_xy, stops)
+    tw, tidx = best_stop(grid_xy, stops)
     sm, sidx = nearest_minutes(grid_xy, to_xy(pois["s"]["lat"], pois["s"]["lon"]))
     gm, gidx = nearest_minutes(grid_xy, to_xy(pois["g"]["lat"], pois["g"]["lon"]))
     bm, bidx = nearest_minutes(grid_xy, to_xy(pois["b"]["lat"], pois["b"]["lon"]))
@@ -607,7 +622,7 @@ def main():
     for k in np.where(keep)[0]:
         cells.append([
             round(float(lat[k]), 5), round(float(lon[k]), 5),
-            r1(tw[k]), r1(tf[k]), int(tidx[k]),
+            r1(tw[k]), int(tidx[k]),
             r1(sm[k]), int(sidx[k]),
             r1(gm[k]), int(gidx[k]),
             r1(bm[k]), int(bidx[k]),
@@ -626,7 +641,7 @@ def main():
         "price_p10": int(np.percentile(valid_prices, 10)) if len(valid_prices) else None,
         "price_p90": int(np.percentile(valid_prices, 90)) if len(valid_prices) else None,
         "centre": list(CENTRE_POINTS.keys()),
-        "fields": ["lat", "lon", "t_walk", "t_ff", "t_idx", "s_min", "s_idx", "g_min", "g_idx",
+        "fields": ["lat", "lon", "t_walk", "t_idx", "s_min", "s_idx", "g_min", "g_idx",
                    "b_min", "b_idx", "p_min", "p_idx", "price", "n_sales", "p_rad"],
     }
     data = {

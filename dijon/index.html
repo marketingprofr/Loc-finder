@@ -118,9 +118,27 @@ document.getElementById('subtitle').textContent =
 
 // ---------- Scores ----------
 function walkScore(min) { return min == null ? 0 : Math.max(0, 10 - 10 * min / S.zeroAt); }
-function scores(c) {
+
+// Score « tram / bus ». On part des points de marche, puis on dé-note deux fois :
+// par la fréquence, puis par le temps de trajet jusqu'au centre. Le même barème
+// est répété dans build_dijon.py, qui s'en sert pour choisir l'arrêt retenu.
+//   marche    : 10 pts à ≤ 1 min, 0 à « minutes pour tomber à 0 point »
+//   fréquence : proportionnelle, plafonnée à 10 départs/h (2 départs/h → ×0,2)
+//   trajet    : ×1 à ≤ 5 min, ×0,8 à 10 min, ×0,4 à 20 min
+const TRAM = { walkFull: 1, freqFull: 10, rideFull: 5, ridePerMin: 0.04 };
+function tramParts(c) {
+  const st = c[F.t_idx] >= 0 ? D.stops[c[F.t_idx]] : null;
+  if (!st || c[F.t_walk] == null) return null;
   return {
-    t: walkScore(c[F.t_walk]) * (c[F.t_ff] ?? 0),
+    walk: clamp(10 * (S.zeroAt - c[F.t_walk]) / Math.max(1, S.zeroAt - TRAM.walkFull), 0, 10),
+    freq: clamp(st[3] / TRAM.freqFull, 0, 1),
+    ride: clamp(1 - (st[2] - TRAM.rideFull) * TRAM.ridePerMin, 0, 1),
+  };
+}
+function scores(c) {
+  const tp = tramParts(c);
+  return {
+    t: tp ? tp.walk * tp.freq * tp.ride : 0,
     s: walkScore(c[F.s_min]),
     g: walkScore(c[F.g_min]),
     b: walkScore(c[F.b_min]),
@@ -177,9 +195,10 @@ function minTxt(m) { return m == null ? '—' : `${fmt(m)} min à pied`; }
 function showPopup(c, latlng) {
   const sc = scores(c);
   const st = c[F.t_idx] >= 0 ? D.stops[c[F.t_idx]] : null;
+  const tp = tramParts(c);
   const name = (list, i) => (i >= 0 && list[i]) ? list[i] : '—';
   const rows = [
-    ['Tram / bus', st ? `${st[0]} (${st[1]}) — ${minTxt(c[F.t_walk])}<br><span class="muted">${fmt(st[2])} min de trajet · ${fmt(st[3])} départs/h vers le centre</span>` : 'aucun arrêt utile à moins de 12 min', sc.t],
+    ['Tram / bus', st ? `${st[0]} (${st[1]}) — ${minTxt(c[F.t_walk])}<br><span class="muted">${fmt(st[2])} min de trajet · ${fmt(st[3])} départs/h vers le centre<br>${fmt(tp.walk)} pts de marche × ${fmt(tp.freq)} (fréquence) × ${fmt(tp.ride)} (trajet)</span>` : 'aucun arrêt utile à moins de 12 min', sc.t],
     ['Supérette', `${name(D.pois.s, c[F.s_idx])} — ${minTxt(c[F.s_min])}`, sc.s],
     ['Salle de sport', `${name(D.pois.g, c[F.g_idx])} — ${minTxt(c[F.g_min])}`, sc.g],
     ['Boulangerie', `${name(D.pois.b, c[F.b_idx])} — ${minTxt(c[F.b_min])}`, sc.b],
