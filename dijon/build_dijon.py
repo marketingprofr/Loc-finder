@@ -74,16 +74,17 @@ DVF_MIN_SALES = 5
 GTFS_URL = "https://www.data.gouv.fr/api/1/datasets/r/e0dbd217-15cd-4e28-9459-211a27511a34"
 DVF_URL = "https://files.data.gouv.fr/geo-dvf/latest/csv/{year}/departements/{dep}.csv.gz"
 
-# Miroirs Overpass, essayés dans l'ordre : le principal est souvent saturé.
+# Miroirs Overpass, essayés dans l'ordre. overpass-api.de filtre les clients
+# non-navigateurs et répond 406 quel que soit le User-Agent envoyé ; il passe
+# donc en dernier, en secours. kumi.systems est un miroir public à forte
+# capacité qui sert la planète entière, comme private.coffee.
 OVERPASS_URLS = [
-    "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
 ]
 
-# Un User-Agent explicite est indispensable : Overpass répond 406 aux clients
-# qui gardent celui de requests par défaut, et la politique d'usage d'OSM
-# demande de s'identifier.
+# S'identifier est demandé par la politique d'usage d'OSM.
 USER_AGENT = "loc-finder/1.0 (+https://github.com/marketingprofr/Loc-finder)"
 
 CACHE_DIR = "cache"
@@ -140,7 +141,12 @@ def download(url, cache_name, data=None):
             r.raise_for_status()
             break
         except Exception as e:  # noqa
-            if attempt == 2:
+            # 4xx hors 429 : le serveur refuse la requête, réessayer à
+            # l'identique ne changera rien — autant passer au miroir suivant.
+            r_err = getattr(e, "response", None)
+            refus = (r_err is not None and 400 <= r_err.status_code < 500
+                     and r_err.status_code != 429)
+            if refus or attempt == 2:
                 raise
             log(f"  échec ({e}), nouvel essai dans 10 s")
             time.sleep(10)
