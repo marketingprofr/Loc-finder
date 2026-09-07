@@ -462,8 +462,11 @@ function renderAnnonces() {
     const teinte = sc == null ? '#8b8f94' : color(sc);
     // Au-delà de 200 m d'incertitude, un point serait un mensonge : on dessine la zone.
     if (a.precision > 200) {
+      // interactive: false — sinon un cercle d'un kilomètre et demi de rayon
+      // avale tous les clics de ce qu'il recouvre, cases comme autres annonces.
+      // Le popup se prend sur le point central, pas sur la zone d'incertitude.
       annonceLayer.addLayer(L.circle([a.lat, a.lon],
-        { radius: a.precision, color: teinte, weight: 1, fillOpacity: 0.12 }));
+        { radius: a.precision, color: teinte, weight: 1, fillOpacity: 0.12, interactive: false }));
     }
     annonceLayer.addLayer(
       L.circleMarker([a.lat, a.lon], { radius: 7, color: '#fff', weight: 2, fillColor: teinte, fillOpacity: 1 })
