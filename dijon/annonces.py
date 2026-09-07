@@ -609,9 +609,9 @@ def deplie(captures):
                     "detail": False,
                 })
         else:
-            # Depuis qu'elle lit __NEXT_DATA__, une capture d'annonce rapporte
-            # aussi les champs structurés. Ils valent mieux que ce qu'une
-            # expression régulière tire du texte.
+            # Une capture d'annonce lit les blocs de caractéristiques de la
+            # page : surface, pièces et type y sont déjà structurés. Ils valent
+            # mieux que ce qu'une expression régulière tire du texte.
             at = c.get("attributs") or {}
             out.append({
                 "url": c.get("url"), "site": c.get("site"),

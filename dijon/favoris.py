@@ -28,6 +28,76 @@ SOURCES = [
 SORTIE = "favoris.html"
 
 
+# Un `/` ouvre une expression régulière plutôt qu'une division quand ce qui
+# précède ne peut pas terminer une valeur.
+AVANT_REGEX = set("(,=:[!&|?{};+-*%~^<>") | {""}
+MOTS_AVANT_REGEX = ("return", "typeof", "instanceof", "in", "of", "new",
+                    "delete", "void", "case", "do", "else")
+
+
+def sans_commentaires(src):
+    """Retire les commentaires JavaScript sans toucher au reste.
+
+    Découper bêtement sur `//` casserait `https://…` et les expressions
+    régulières ; ne retirer que les lignes entièrement commentées laissait
+    passer les commentaires de fin de ligne, qui avalent tout ce qui les suit
+    une fois le script réduit à une seule ligne. Il faut donc suivre l'état du
+    texte : chaîne, gabarit, expression régulière, ou code.
+    """
+    sortie = []
+    i, n = 0, len(src)
+    etat = None            # None | "'" | '"' | '`' | 're' | 'recls'
+    precedent = ""         # dernier caractère de code, espaces exclus
+
+    def ouvre_regex():
+        if precedent in AVANT_REGEX:
+            return True
+        deja = "".join(sortie)
+        return any(re.search(r"\b" + m + r"\s*$", deja) for m in MOTS_AVANT_REGEX)
+
+    while i < n:
+        c = src[i]
+        if etat is None:
+            if src.startswith("//", i):
+                saut = src.find("\n", i)
+                i = n if saut < 0 else saut
+                continue
+            if src.startswith("/*", i):
+                fin = src.find("*/", i + 2)
+                i = n if fin < 0 else fin + 2
+                continue
+            if c in "'\"`":
+                etat = c
+            elif c == "/" and ouvre_regex():
+                etat = "re"
+            sortie.append(c)
+            if not c.isspace():
+                precedent = c
+            i += 1
+            continue
+
+        sortie.append(c)
+        if c == "\\" and i + 1 < n:       # échappement : le caractère suivant est littéral
+            sortie.append(src[i + 1])
+            i += 2
+            continue
+        if etat in ("'", '"', "`"):
+            if c == etat:
+                etat, precedent = None, c
+        elif etat == "re":
+            if c == "[":
+                etat = "recls"              # un `/` dans [...] ne ferme pas l'expression
+            elif c == "/":
+                etat, precedent = None, "/"
+        elif etat == "recls" and c == "]":
+            etat = "re"
+        i += 1
+
+    if etat is not None:
+        raise ValueError(f"lecture du JavaScript incohérente (bloc {etat!r} non refermé)")
+    return "".join(sortie)
+
+
 def ligne_favori(chemin):
     """Le script, réduit à une ligne `javascript:…`.
 
@@ -35,18 +105,16 @@ def ligne_favori(chemin):
     source : une ligne de trois mille caractères recopiée dérive de l'original
     au premier changement, sans que rien ne le signale.
 
-    On ne retire que les lignes entièrement commentées : découper les `//` en
-    fin de ligne casserait les URL et les expressions régulières. Toutes les
-    instructions se terminant par un point-virgule ou une accolade, les joindre
-    par une espace est sans risque.
+    Toutes les instructions se terminant par un point-virgule ou une accolade,
+    joindre les lignes par une espace est sans risque — une fois les
+    commentaires retirés.
     """
-    lignes = []
     with io.open(chemin, encoding="utf-8") as f:
-        for ligne in f:
-            t = ligne.strip()
-            if t and not t.startswith("//"):
-                lignes.append(re.sub(r"\s*/\*.*?\*/\s*$", "", t))
-    return "javascript:" + " ".join(l for l in lignes if l)
+        code = sans_commentaires(f.read())
+    ligne = " ".join(l for l in (x.strip() for x in code.splitlines()) if l)
+    if "//" in re.sub(r"'[^']*'|\"[^\"]*\"", "", ligne):
+        raise ValueError(f"{os.path.basename(chemin)} : commentaire résiduel")
+    return "javascript:" + ligne
 
 
 def main():
