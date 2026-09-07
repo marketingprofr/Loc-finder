@@ -85,13 +85,13 @@ DVF_DEPARTEMENT = "21"
 DVF_RADII_M = [500, 1000, 1500, 2500]
 DVF_MIN_SALES = 5
 
-# Maisons et appartements ne se vendent pas au même prix au m². Pour les verser
-# dans une même médiane, on ramène les appartements sur l'échelle « maison » en
-# multipliant leur prix au m² par ce coefficient.
-# Le script affiche le rapport réellement observé sur la métropole : si les deux
-# s'écartent, c'est le chiffre observé qu'il faut recopier ici. Un rapport
-# inférieur à 1 signifierait que les appartements sont plus chers au m² que les
-# maisons, et qu'il faut donc les abaisser, pas les relever.
+# À surface et emplacement égaux, une maison vaut plus qu'un appartement — on
+# a le jardin et le garage en plus. Pour verser les deux dans une même médiane,
+# le prix au m² des appartements est multiplié par ce coefficient, ce qui les
+# ramène sur l'échelle « maison » : à 1,20, un appartement à 2 200 €/m² compte
+# pour 2 640, prix qu'aurait une maison équivalente au même endroit.
+# Le script vérifie ce coefficient sur les ventes réelles et le signale s'il
+# s'en écarte.
 APPART_VERS_MAISON = 1.20
 
 # Bornes de surface plausibles, par type.
@@ -515,7 +515,8 @@ def rapport_local(maisons, apparts, rayon=800, mini=5):
     s'inverser. On compare donc chaque appartement aux maisons vendues autour
     de lui, puis on prend la médiane de ces rapports.
 
-    → (coefficient à appliquer aux appartements, nombre d'appariements).
+    → (combien de fois une maison vaut le prix au m² d'un appartement voisin,
+       nombre d'appariements). C'est exactement le coefficient à appliquer.
     """
     if len(maisons) < mini or not len(apparts):
         return None, 0
@@ -555,13 +556,13 @@ def load_dvf():
 
     coef, n_paires = rapport_local(maisons, apparts)
     if coef is not None:
-        log(f"  rapport maison/appartement mesuré à emplacement comparable : {coef:.2f} "
-            f"(sur {n_paires} appartements)")
-        log(f"  coefficient appliqué : {APPART_VERS_MAISON:.2f}"
+        log(f"  mesuré : au même endroit, une maison vaut {coef:.2f} fois le prix au m² "
+            f"d'un appartement, soit {(coef - 1) * 100:+.0f} % (sur {n_paires} appartements)")
+        log(f"  appliqué : {APPART_VERS_MAISON:.2f}, soit {(APPART_VERS_MAISON - 1) * 100:+.0f} %"
             + ("" if abs(coef - APPART_VERS_MAISON) < 0.08
                else f"  ← écart notable, envisager APPART_VERS_MAISON = {coef:.2f}"))
     else:
-        log("  trop peu de ventes voisines pour mesurer le rapport maison/appartement")
+        log("  trop peu de ventes voisines pour vérifier le coefficient appartement")
 
     apparts = apparts.copy()
     apparts["ppm2"] *= APPART_VERS_MAISON
