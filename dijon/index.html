@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Où acheter — Dijon Métropole</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="data.js"></script>
+<style>
+  :root { --ink: #1f2328; --muted: #6b7280; --line: #e2e5e9; --bg: #fafafa; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); }
+  #app { display: flex; height: 100%; }
+  #panel { width: 320px; flex: none; overflow-y: auto; background: var(--bg); border-right: 1px solid var(--line); padding: 16px 18px 24px; }
+  #map { flex: 1; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  fieldset { border: 0; padding: 0; margin: 0 0 16px; }
+  legend { font-weight: 600; padding: 0; margin-bottom: 8px; }
+  .row { display: grid; grid-template-columns: 1fr 34px; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .row label { grid-column: 1 / 3; color: var(--ink); }
+  .row input[type=range] { width: 100%; margin: 0; }
+  .row output { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .inline { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .inline input[type=number] { width: 80px; padding: 4px 6px; border: 1px solid #c9ced4; border-radius: 4px; font: inherit; }
+  .inline input[type=text] { flex: 1; min-width: 120px; padding: 6px 8px; border: 1px solid #c9ced4; border-radius: 4px; font: inherit; }
+  button { padding: 6px 10px; border: 1px solid #c9ced4; background: #fff; border-radius: 4px; font: inherit; cursor: pointer; }
+  button:hover { background: #f1f3f5; }
+  .radio { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+  .legend { height: 10px; border-radius: 3px; background: linear-gradient(90deg, hsl(0 75% 45%), hsl(60 75% 45%), hsl(120 75% 40%)); margin: 6px 0 2px; }
+  .legend-ticks { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  #status { min-height: 18px; color: var(--muted); font-size: 12px; }
+  .popup table { border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+  .popup td { padding: 2px 8px 2px 0; vertical-align: top; }
+  .popup td:last-child { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .popup .tot { font-size: 14px; }
+  .popup .tot b { font-size: 16px; }
+  .popup .muted { color: var(--muted); }
+  @media (max-width: 720px) {
+    #app { flex-direction: column-reverse; }
+    #panel { width: auto; max-height: 46vh; border-right: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="panel">
+    <h1 id="title">Où acheter</h1>
+    <div class="sub" id="subtitle"></div>
+
+    <fieldset>
+      <legend>Poids des critères (0 à 10)</legend>
+      <div id="weights"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Couleur de la carte</legend>
+      <div class="radio">
+        <label><input type="radio" name="mode" value="noprice" checked> Score hors prix</label>
+        <label><input type="radio" name="mode" value="price"> Score avec prix</label>
+      </div>
+      <div class="legend"></div>
+      <div class="legend-ticks"><span>0</span><span>5</span><span>10</span></div>
+      <div class="row" style="margin-top:8px">
+        <label>N'afficher que les cases au-dessus de <span id="minScoreVal">0</span> / 10</label>
+        <input type="range" id="minScore" min="0" max="10" step="0.5" value="0" style="grid-column:1/3">
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Réglages</legend>
+      <div class="inline"><span>Minutes à pied pour tomber à 0 point</span><input type="number" id="zeroAt" min="3" max="30" step="1" value="10"></div>
+      <div class="note">10 → un point perdu par minute (5 min = 5 pts). 5 → deux points perdus par minute.</div>
+      <div class="inline" style="margin-top:10px"><span>Prix : 10 pts à</span><input type="number" id="pMin" step="50"><span>€/m², 0 pt à</span><input type="number" id="pMax" step="50"><span>€/m²</span></div>
+      <div class="inline"><span>Masquer au-dessus de</span><input type="number" id="budget" step="50" placeholder="—"><span>€/m²</span></div>
+      <div class="inline"><label><input type="checkbox" id="showStops"> Afficher les arrêts retenus</label></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Scorer une adresse</legend>
+      <div class="inline"><input type="text" id="addr" placeholder="12 rue de la Liberté, Dijon"><button id="go">Voir</button></div>
+      <div id="status"></div>
+    </fieldset>
+  </div>
+  <div id="map"></div>
+</div>
+
+<script>
+const D = window.DATA;
+if (!D) {
+  document.getElementById('app').innerHTML =
+    '<div style="margin:auto;max-width:32em;padding:24px;color:var(--muted)">' +
+    '<h1 style="color:var(--ink)">Données manquantes</h1>' +
+    '<p><code>data.js</code> n’a pas été trouvé. Le générer avec :</p>' +
+    '<pre>pip install -r ../requirements.txt\npython build_dijon.py</pre>' +
+    '<p>puis recharger cette page.</p></div>';
+  throw new Error('data.js manquant');
+}
+const F = {}; D.meta.fields.forEach((f, i) => F[f] = i);
+const CRIT = [
+  { k: 't', label: 'Tram / bus vers le centre', w: 10 },
+  { k: 's', label: 'Supérette, supermarché', w: 8 },
+  { k: 'g', label: 'Salle de sport', w: 6 },
+  { k: 'b', label: 'Boulangerie', w: 5 },
+  { k: 'p', label: 'Parc, espace vert', w: 5 },
+  { k: 'x', label: 'Prix au m²', w: 5 },
+];
+const S = { zeroAt: 10, pMin: D.meta.price_p10 ?? 2000, pMax: D.meta.price_p90 ?? 3500, budget: null, minScore: 0, withPrice: false };
+const fmt = n => n.toLocaleString('fr-FR', { maximumFractionDigits: 1 });
+const fmtInt = n => n.toLocaleString('fr-FR', { maximumFractionDigits: 0 });
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+document.getElementById('title').textContent = 'Où acheter — ' + D.meta.city;
+document.getElementById('subtitle').textContent =
+  `${fmtInt(D.cells.length)} cases de ${D.meta.step_m} m · centre = ${D.meta.centre.join(' / ')} en ≤ ${D.meta.max_ride_min} min · données du ${D.meta.generated}`;
+
+// ---------- Scores ----------
+function walkScore(min) { return min == null ? 0 : Math.max(0, 10 - 10 * min / S.zeroAt); }
+function scores(c) {
+  return {
+    t: walkScore(c[F.t_walk]) * (c[F.t_ff] ?? 0),
+    s: walkScore(c[F.s_min]),
+    g: walkScore(c[F.g_min]),
+    b: walkScore(c[F.b_min]),
+    p: walkScore(c[F.p_min]),
+    x: c[F.price] == null ? null : clamp(10 * (S.pMax - c[F.price]) / Math.max(1, S.pMax - S.pMin), 0, 10),
+  };
+}
+function total(sc, withPrice) {
+  let num = 0, den = 0;
+  for (const cr of CRIT) {
+    if (cr.k === 'x' && !withPrice) continue;
+    const v = sc[cr.k];
+    if (v == null || cr.w === 0) continue;
+    num += cr.w * v; den += cr.w;
+  }
+  return den ? num / den : 0;
+}
+const color = s => `hsl(${(s / 10) * 120} 75% ${42 + s * 0.4}%)`;
+
+// ---------- Carte ----------
+const map = L.map('map', { preferCanvas: true }).setView([47.322, 5.04], 12);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+const dlat = D.meta.step_m / 110574;
+const dlon = D.meta.step_m / (111320 * Math.cos(D.meta.lat0 * Math.PI / 180));
+const cellLayer = L.layerGroup().addTo(map);
+const rects = D.cells.map(c => {
+  const r = L.rectangle([[c[F.lat] - dlat / 2, c[F.lon] - dlon / 2], [c[F.lat] + dlat / 2, c[F.lon] + dlon / 2]],
+    { stroke: false, fillOpacity: 0.55, fillColor: '#888', interactive: true });
+  r.on('click', e => showPopup(c, e.latlng));
+  r.addTo(cellLayer);
+  return r;
+});
+
+function render() {
+  for (let i = 0; i < D.cells.length; i++) {
+    const c = D.cells[i], sc = scores(c);
+    const t = total(sc, S.withPrice);
+    const hidden = t < S.minScore || (S.budget && c[F.price] != null && c[F.price] > S.budget);
+    rects[i].setStyle(hidden ? { fillOpacity: 0 } : { fillOpacity: 0.55, fillColor: color(t) });
+  }
+}
+let raf = null;
+const scheduleRender = () => { if (!raf) raf = requestAnimationFrame(() => { raf = null; render(); }); };
+
+// ---------- Popup ----------
+function minTxt(m) { return m == null ? '—' : `${fmt(m)} min à pied`; }
+function showPopup(c, latlng) {
+  const sc = scores(c);
+  const st = c[F.t_idx] >= 0 ? D.stops[c[F.t_idx]] : null;
+  const name = (list, i) => (i >= 0 && list[i]) ? list[i] : '—';
+  const rows = [
+    ['Tram / bus', st ? `${st[0]} (${st[1]}) — ${minTxt(c[F.t_walk])}<br><span class="muted">${fmt(st[2])} min de trajet · ${fmt(st[3])} départs/h vers le centre</span>` : 'aucun arrêt utile à moins de 12 min', sc.t],
+    ['Supérette', `${name(D.pois.s, c[F.s_idx])} — ${minTxt(c[F.s_min])}`, sc.s],
+    ['Salle de sport', `${name(D.pois.g, c[F.g_idx])} — ${minTxt(c[F.g_min])}`, sc.g],
+    ['Boulangerie', `${name(D.pois.b, c[F.b_idx])} — ${minTxt(c[F.b_min])}`, sc.b],
+    ['Parc', `${name(D.parks, c[F.p_idx])} — ${minTxt(c[F.p_min])}`, sc.p],
+    ['Prix maisons', c[F.price] == null ? 'pas assez de ventes autour' : `${fmtInt(c[F.price])} €/m² <span class="muted">(${c[F.n_sales]} ventes)</span>`, sc.x],
+  ];
+  const wOf = k => CRIT.find(cr => cr.k === k).w;
+  const html = `<div class="popup">
+    <div class="tot">Hors prix <b>${fmt(total(sc, false))}</b> / 10 &nbsp;·&nbsp; avec prix <b>${fmt(total(sc, true))}</b> / 10</div>
+    <table>${rows.map(([l, d, s], i) => `<tr><td><b>${l}</b><br>${d}</td><td>${s == null ? '—' : fmt(s)} <span class="muted">× ${wOf(CRIT[i].k)}</span></td></tr>`).join('')}</table>
+    <div class="muted" style="margin-top:6px">${c[F.lat].toFixed(5)}, ${c[F.lon].toFixed(5)}</div>
+  </div>`;
+  L.popup({ maxWidth: 340 }).setLatLng(latlng).setContent(html).openOn(map);
+}
+
+// ---------- Arrêts ----------
+const stopLayer = L.layerGroup();
+D.stops.forEach(s => {
+  L.circleMarker([s[4], s[5]], { radius: 4, color: '#1d4ed8', weight: 1, fillOpacity: 0.8 })
+    .bindPopup(`<b>${s[0]}</b> (${s[1]})<br>${fmt(s[2])} min de trajet · ${fmt(s[3])} départs/h vers le centre`)
+    .addTo(stopLayer);
+});
+document.getElementById('showStops').addEventListener('change', e => e.target.checked ? stopLayer.addTo(map) : stopLayer.remove());
+
+// ---------- Panneau ----------
+const wBox = document.getElementById('weights');
+CRIT.forEach(cr => {
+  const row = document.createElement('div'); row.className = 'row';
+  row.innerHTML = `<label>${cr.label}</label><input type="range" min="0" max="10" step="1" value="${cr.w}"><output>${cr.w}</output>`;
+  const inp = row.querySelector('input'), out = row.querySelector('output');
+  inp.addEventListener('input', () => { cr.w = +inp.value; out.textContent = cr.w; scheduleRender(); });
+  wBox.appendChild(row);
+});
+document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', () => { S.withPrice = r.value === 'price'; scheduleRender(); }));
+const minScore = document.getElementById('minScore');
+minScore.addEventListener('input', () => { S.minScore = +minScore.value; document.getElementById('minScoreVal').textContent = fmt(S.minScore); scheduleRender(); });
+const zeroAt = document.getElementById('zeroAt');
+zeroAt.addEventListener('change', () => { S.zeroAt = clamp(+zeroAt.value || 10, 3, 30); zeroAt.value = S.zeroAt; scheduleRender(); });
+const pMin = document.getElementById('pMin'), pMax = document.getElementById('pMax'), budget = document.getElementById('budget');
+pMin.value = S.pMin; pMax.value = S.pMax;
+pMin.addEventListener('change', () => { S.pMin = +pMin.value; scheduleRender(); });
+pMax.addEventListener('change', () => { S.pMax = +pMax.value; scheduleRender(); });
+budget.addEventListener('change', () => { S.budget = +budget.value || null; scheduleRender(); });
+
+// ---------- Adresse ----------
+let marker = null;
+async function locate() {
+  const q = document.getElementById('addr').value.trim();
+  const status = document.getElementById('status');
+  if (!q) return;
+  status.textContent = 'Recherche…';
+  try {
+    const r = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(q)}&limit=1&lat=${D.meta.lat0}&lon=5.04`);
+    const j = await r.json();
+    if (!j.features || !j.features.length) { status.textContent = 'Adresse introuvable.'; return; }
+    const f = j.features[0];
+    const [lon, lat] = f.geometry.coordinates;
+    let best = -1, bestD = Infinity;
+    for (let i = 0; i < D.cells.length; i++) {
+      const c = D.cells[i];
+      const d = (c[F.lat] - lat) ** 2 + ((c[F.lon] - lon) * Math.cos(lat * Math.PI / 180)) ** 2;
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    if (marker) marker.remove();
+    marker = L.marker([lat, lon]).addTo(map);
+    map.setView([lat, lon], 16);
+    if (best >= 0 && Math.sqrt(bestD) * 111000 < 300) { status.textContent = f.properties.label; showPopup(D.cells[best], L.latLng(lat, lon)); }
+    else status.textContent = `${f.properties.label} — hors zone scorée (loin de tout).`;
+  } catch (e) {
+    status.textContent = 'Échec de la géolocalisation (réseau ?).';
+  }
+}
+document.getElementById('go').addEventListener('click', locate);
+document.getElementById('addr').addEventListener('keydown', e => { if (e.key === 'Enter') locate(); });
+
+render();
+</script>
+</body>
+</html>

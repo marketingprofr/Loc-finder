@@ -1,0 +1,14 @@
+# Données générées / caches
+cache/
+data.js
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS / éditeurs
+.DS_Store
+.idea/
+.vscode/
