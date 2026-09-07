@@ -451,6 +451,12 @@ def voies(texte):
         cle = sans_accents(libelle)
         if len(libelle) < 9 or cle in vus:
             continue
+        # « terrain clos de 300 m² » n'est pas une adresse. Un chiffre peut
+        # figurer dans un nom de voie — rue du 8 Mai 1945 — mais jamais seul :
+        # il faut au moins un mot. Sans cette exigence, « clos de 300 » partait
+        # au géocodeur, qui répondait « Rue du Clos de Tart ».
+        if not re.search(r"[A-ZÉÈÀÂÔÎÇÜŒ]", m.group("nom")):
+            continue
         vus.add(cle)
         avant = sans_accents(texte[max(0, m.start() - 45):m.start()])
         # « À 200 m de la place Darcy, la maison est située rue Berlioz » cite les
@@ -465,6 +471,10 @@ def voies(texte):
         proche = loin > ici and reste - loin <= PORTEE_MARQUEUR
         out.append({
             "libelle": libelle,
+            # Le nom seul, sans le type : c'est lui qui doit se retrouver dans
+            # la réponse du géocodeur. Le type, lui, varie — on demande
+            # « chemin des Vignes », la base répond « Rue des Vignes ».
+            "nom": m.group("nom"),
             "numero": m.group("num"),
             "proximite": proche,
             "distance": distance_annoncee(avant) if proche else None,
@@ -473,6 +483,23 @@ def voies(texte):
         if len(out) >= MAX_VOIES:
             break
     return out
+
+
+LIAISONS_NOM = {"de", "du", "des", "la", "le", "les", "aux", "au", "et", "sur"}
+
+
+def concorde(nom, label):
+    """La réponse du géocodeur reprend-elle bien les mots de la voie demandée ?
+
+    Le géocodeur répond toujours quelque chose : à « clos de 300 » il proposait
+    « Rue du Clos de Tart », qui partage un mot sur deux et se trouve à l'autre
+    bout de la ville. Exiger que tous les mots significatifs se retrouvent dans
+    la réponse écarte ces rapprochements sans rien coûter aux vraies rues.
+    """
+    cible = sans_accents(label)
+    mots = [x for x in re.findall(r"[\wÀ-ÿ]+", sans_accents(nom))
+            if len(x) >= 3 and x not in LIAISONS_NOM]
+    return all(x in cible for x in mots) if mots else False
 
 
 def commune_annoncee(brut, geo):
@@ -530,6 +557,8 @@ def situe(texte, geo, session, commune_declaree=None):
             if not r:
                 continue
             lat, lon, typ, label, score, ville_ban = r
+            if not concorde(v["nom"], label):
+                continue
             bonne_commune = (not commune
                              or sans_accents(ville_ban) == sans_accents(commune))
             # Une rue portant le nom d'une autre commune existe un peu partout :
@@ -771,7 +800,9 @@ def diagnostic(annonce, geo, session=None):
         lat, lon, typ, label, score, ville_ban = r
         bonne = not commune or sans_accents(ville_ban) == sans_accents(commune)
         verdict = f"{label} [{typ}, score {score:.2f}]"
-        if not bonne and force == "forte":
+        if not concorde(x["nom"], label):
+            verdict += " → ÉCARTÉE : la réponse ne reprend pas les mots demandés"
+        elif not bonne and force == "forte":
             verdict += f" → ÉCARTÉE : trouvée à {ville_ban}, pas à {commune}"
         elif typ == "housenumber" and x["numero"]:
             verdict += f" → retenue à ±{PRECISION_M['housenumber']} m"
