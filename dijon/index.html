@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="data.js"></script>
+<script src="annonces.js"></script>
 <style>
   :root { --ink: #1f2328; --muted: #6b7280; --line: #e2e5e9; --bg: #fafafa; }
   * { box-sizing: border-box; }
@@ -25,6 +26,7 @@
   .inline { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
   .inline input[type=number] { width: 80px; padding: 4px 6px; border: 1px solid #c9ced4; border-radius: 4px; font: inherit; }
   .inline input[type=text] { flex: 1; min-width: 120px; padding: 6px 8px; border: 1px solid #c9ced4; border-radius: 4px; font: inherit; }
+  .inline select { padding: 4px 6px; border: 1px solid #c9ced4; border-radius: 4px; font: inherit; background: #fff; }
   button { padding: 6px 10px; border: 1px solid #c9ced4; background: #fff; border-radius: 4px; font: inherit; cursor: pointer; }
   button:hover { background: #f1f3f5; }
   .radio { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
@@ -76,6 +78,15 @@
       <div class="inline" style="margin-top:10px"><span>Prix : 10 pts à</span><input type="number" id="pMin" step="50"><span>€/m², 0 pt à</span><input type="number" id="pMax" step="50"><span>€/m²</span></div>
       <div class="inline"><span>Masquer au-dessus de</span><input type="number" id="budget" step="50" placeholder="—"><span>€/m²</span></div>
       <div class="inline"><label><input type="checkbox" id="showStops"> Afficher les arrêts retenus</label></div>
+    </fieldset>
+
+    <fieldset id="annoncesBox" hidden>
+      <legend>Annonces</legend>
+      <div class="inline"><span>Prix max</span><input type="number" id="aPrix" step="5000" placeholder="—"><span>€</span></div>
+      <div class="inline"><span>Surface min</span><input type="number" id="aSurf" step="5" placeholder="—"><span>m²</span></div>
+      <div class="inline"><span>Type</span><select id="aType"><option value="">tous</option><option value="maison">maison</option><option value="appartement">appartement</option></select></div>
+      <div class="inline"><label><input type="checkbox" id="aShow" checked> Afficher sur la carte</label></div>
+      <div class="note" id="aCount"></div>
     </fieldset>
 
     <fieldset>
@@ -188,7 +199,7 @@ function render() {
   }
 }
 let raf = null;
-const scheduleRender = () => { if (!raf) raf = requestAnimationFrame(() => { raf = null; render(); }); };
+const scheduleRender = () => { if (!raf) raf = requestAnimationFrame(() => { raf = null; render(); renderAnnonces(); }); };
 
 // ---------- Popup ----------
 function minTxt(m) { return m == null ? '—' : `${fmt(m)} min à pied`; }
@@ -243,6 +254,91 @@ pMin.addEventListener('change', () => { S.pMin = +pMin.value; scheduleRender(); 
 pMax.addEventListener('change', () => { S.pMax = +pMax.value; scheduleRender(); });
 budget.addEventListener('change', () => { S.budget = +budget.value || null; scheduleRender(); });
 
+// ---------- Annonces ----------
+// Le texte vient de pages web quelconques : on l'échappe, et on n'ouvre que du http(s).
+const esc = v => String(v ?? '').replace(/[&<>"']/g, ch =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const safeUrl = u => /^https?:\/\//i.test(u || '') ? u : '#';
+
+function cellAt(lat, lon) {
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < D.cells.length; i++) {
+    const c = D.cells[i];
+    const d = (c[F.lat] - lat) ** 2 + ((c[F.lon] - lon) * Math.cos(lat * Math.PI / 180)) ** 2;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return (best >= 0 && Math.sqrt(bestD) * 111000 < 300) ? D.cells[best] : null;
+}
+
+const ANN = Array.isArray(window.ANNONCES) ? window.ANNONCES : [];
+const annonceLayer = L.layerGroup();
+const AF = { prix: null, surf: null, type: '' };
+
+// Une annonce dont le prix ou la surface n'a pas pu être lu reste affichée :
+// l'inconnu n'est pas un motif d'exclusion, le popup dira « — ».
+function annonceVisible(a) {
+  if (AF.prix && a.prix && a.prix > AF.prix) return false;
+  if (AF.surf && a.surface && a.surface < AF.surf) return false;
+  if (AF.type && a.type !== AF.type) return false;
+  return true;
+}
+
+function annoncePopup(a, c, sc) {
+  const ppm2 = (a.prix && a.surface) ? a.prix / a.surface : null;
+  const med = c ? c[F.price] : null;
+  let ecart = '';
+  if (ppm2 && med) {
+    const p = Math.round(100 * (ppm2 / med - 1));
+    ecart = ` <span class="muted">(${p >= 0 ? '+' : ''}${p} % / ${fmtInt(med)} €/m² du secteur)</span>`;
+  }
+  return `<div class="popup">
+    <div class="tot"><a href="${esc(safeUrl(a.url))}" target="_blank" rel="noopener">${esc(a.titre) || 'annonce'}</a></div>
+    <div class="muted">${esc(a.site)} · capturée le ${esc(a.capture) || '—'}</div>
+    <table>
+      <tr><td>Prix</td><td>${a.prix ? fmtInt(a.prix) + ' €' : '—'}</td></tr>
+      <tr><td>Surface</td><td>${a.surface ? fmt(a.surface) + ' m²' : '—'}${a.pieces ? ' · ' + a.pieces + ' pièces' : ''}</td></tr>
+      <tr><td>Prix au m²</td><td>${ppm2 ? fmtInt(ppm2) + ' €' : '—'}${ecart}</td></tr>
+      <tr><td>Score de la case</td><td>${sc == null ? 'hors zone' : fmt(sc) + ' / 10'}</td></tr>
+    </table>
+    <div class="muted" style="margin-top:6px">Situé d'après « ${esc(a.indice)} », à ±${esc(a.precision)} m près.</div>
+  </div>`;
+}
+
+function renderAnnonces() {
+  annonceLayer.clearLayers();
+  let n = 0;
+  for (const a of ANN) {
+    if (!annonceVisible(a)) continue;
+    n++;
+    const c = cellAt(a.lat, a.lon);
+    const sc = c ? total(scores(c), S.withPrice) : null;
+    const teinte = sc == null ? '#8b8f94' : color(sc);
+    // Au-delà de 200 m d'incertitude, un point serait un mensonge : on dessine la zone.
+    if (a.precision > 200) {
+      annonceLayer.addLayer(L.circle([a.lat, a.lon],
+        { radius: a.precision, color: teinte, weight: 1, fillOpacity: 0.12 }));
+    }
+    annonceLayer.addLayer(
+      L.circleMarker([a.lat, a.lon], { radius: 7, color: '#fff', weight: 2, fillColor: teinte, fillOpacity: 1 })
+        .bindPopup(annoncePopup(a, c, sc), { maxWidth: 320 }));
+  }
+  const el = document.getElementById('aCount');
+  if (el) el.textContent = `${n} annonce${n > 1 ? 's' : ''} sur ${ANN.length} affichée${n > 1 ? 's' : ''}`;
+}
+
+if (ANN.length) {
+  document.getElementById('annoncesBox').hidden = false;
+  annonceLayer.addTo(map);
+  const aPrix = document.getElementById('aPrix'), aSurf = document.getElementById('aSurf'),
+        aType = document.getElementById('aType'), aShow = document.getElementById('aShow');
+  aPrix.addEventListener('change', () => { AF.prix = +aPrix.value || null; renderAnnonces(); });
+  aSurf.addEventListener('change', () => { AF.surf = +aSurf.value || null; renderAnnonces(); });
+  aType.addEventListener('change', () => { AF.type = aType.value; renderAnnonces(); });
+  aShow.addEventListener('change', () => {
+    if (aShow.checked) annonceLayer.addTo(map); else annonceLayer.remove();
+  });
+}
+
 // ---------- Adresse ----------
 let marker = null;
 async function locate() {
@@ -256,16 +352,11 @@ async function locate() {
     if (!j.features || !j.features.length) { status.textContent = 'Adresse introuvable.'; return; }
     const f = j.features[0];
     const [lon, lat] = f.geometry.coordinates;
-    let best = -1, bestD = Infinity;
-    for (let i = 0; i < D.cells.length; i++) {
-      const c = D.cells[i];
-      const d = (c[F.lat] - lat) ** 2 + ((c[F.lon] - lon) * Math.cos(lat * Math.PI / 180)) ** 2;
-      if (d < bestD) { bestD = d; best = i; }
-    }
+    const cell = cellAt(lat, lon);
     if (marker) marker.remove();
     marker = L.marker([lat, lon]).addTo(map);
     map.setView([lat, lon], 16);
-    if (best >= 0 && Math.sqrt(bestD) * 111000 < 300) { status.textContent = f.properties.label; showPopup(D.cells[best], L.latLng(lat, lon)); }
+    if (cell) { status.textContent = f.properties.label; showPopup(cell, L.latLng(lat, lon)); }
     else status.textContent = `${f.properties.label} — hors zone scorée (loin de tout).`;
   } catch (e) {
     status.textContent = 'Échec de la géolocalisation (réseau ?).';
@@ -275,6 +366,7 @@ document.getElementById('go').addEventListener('click', locate);
 document.getElementById('addr').addEventListener('keydown', e => { if (e.key === 'Enter') locate(); });
 
 render();
+renderAnnonces();
 </script>
 </body>
 </html>

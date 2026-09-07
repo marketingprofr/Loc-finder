@@ -1,6 +1,8 @@
 # Données générées / caches
 cache/
 data.js
+annonces.js
+captures/
 
 # Python
 __pycache__/
