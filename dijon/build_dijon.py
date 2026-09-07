@@ -17,6 +17,7 @@ un nouveau téléchargement.
 
 Tous les paramètres sont dans la section CONFIG ci-dessous.
 """
+import hashlib
 import io
 import json
 import math
@@ -197,17 +198,29 @@ OVERPASS_QUERY = """
   nwr["natural"="wood"]({bbox});
   nwr["landuse"="forest"]({bbox});
 ) -> .green;
+(
+  relation["boundary"="administrative"]["admin_level"="8"]({bbox});
+) -> .communes;
+(
+  nwr["place"~"^(suburb|quarter|neighbourhood|village|town)$"]({bbox});
+) -> .lieux;
 .poi out center;
 .green out geom;
+.communes out center;
+.lieux out center;
 """
 
 
 def fetch_osm():
     bbox = f"{BBOX[0]},{BBOX[1]},{BBOX[2]},{BBOX[3]}"
-    query = {"data": OVERPASS_QUERY.format(bbox=bbox)}
+    corps = OVERPASS_QUERY.format(bbox=bbox)
+    query = {"data": corps}
+    # La clé de cache suit la requête : sans ça, modifier la requête resservait
+    # l'ancienne réponse, amputée de ce qu'on venait d'ajouter.
+    cache = f"overpass_{hashlib.sha1(corps.encode()).hexdigest()[:10]}.json"
     for i, url in enumerate(OVERPASS_URLS):
         try:
-            raw = download(url, "overpass.json", data=query)
+            raw = download(url, cache, data=query)
             break
         except Exception as e:  # noqa
             if i == len(OVERPASS_URLS) - 1:
@@ -259,6 +272,37 @@ def parse_pois(elements):
     if ecartes:
         log(f"  écartés (amenity incompatible avec le commerce) : {ecartes}")
     return {k: pd.DataFrame(v, columns=["lat", "lon", "name"]) for k, v in cats.items()}
+
+
+def parse_lieux(elements):
+    """Communes et quartiers nommés → deux listes [nom, lat, lon].
+
+    Ce sont les repères qui permettent de contredire la localisation déclarée
+    d'une annonce : « rue des Vignes à Chenôve » n'est pas à Dijon, même si
+    l'annonceur a coché Dijon.
+    """
+    communes, quartiers = [], []
+    for el in elements:
+        t = el.get("tags", {})
+        nom = t.get("name")
+        if not nom:
+            continue
+        c = element_center(el)
+        if not c:
+            continue
+        if t.get("boundary") == "administrative" and t.get("admin_level") == "8":
+            communes.append([nom, round(c[0], 5), round(c[1], 5)])
+        elif t.get("place") in ("suburb", "quarter", "neighbourhood", "village", "town"):
+            quartiers.append([nom, round(c[0], 5), round(c[1], 5)])
+    # Un même nom peut revenir (noeud + relation) : on garde la première occurrence.
+    def uniq(liste):
+        vus, out = set(), []
+        for nom, la, lo in liste:
+            if nom.lower() not in vus:
+                vus.add(nom.lower())
+                out.append([nom, la, lo])
+        return out
+    return uniq(communes), uniq(quartiers)
 
 
 def shoelace_area(ring_xy):
@@ -674,6 +718,8 @@ def main():
     elements = fetch_osm()
     pois = parse_pois(elements)
     green_xy, green_owner, green_names = parse_green(elements)
+    communes, quartiers = parse_lieux(elements)
+    log(f"  communes {len(communes)}, quartiers nommés {len(quartiers)}")
     log(f"  supérettes {len(pois['s'])}, salles de sport {len(pois['g'])}, boulangeries {len(pois['b'])}, "
         f"espaces verts ≥ seuil {len(green_names)}")
 
@@ -740,6 +786,8 @@ def main():
                      for n, la, lo in zip(v["name"], v["lat"], v["lon"])]
                  for k, v in pois.items()},
         "parks": park_points(green_xy, green_owner, green_names),
+        "communes": communes,
+        "quartiers": quartiers,
     }
     with open(OUTPUT, "w", encoding="utf-8") as f:
         f.write("window.DATA = ")

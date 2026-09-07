@@ -45,7 +45,8 @@ USER_AGENT = "loc-finder/1.0 (+https://github.com/marketingprofr/Loc-finder)"
 PRECISION_M = {
     "housenumber": 60,
     "street": 150,
-    "repere": 400,        # parc, arrêt, quartier nommé
+    "repere": 400,        # parc, arrêt nommé
+    "quartier": 500,      # quartier nommé
     "annonceur": 800,     # position donnée par l'annonce, volontairement floue
     "municipality": 1500,
 }
@@ -142,49 +143,121 @@ def extrait_type(texte):
 
 # ============================ LOCALISATION ===================================
 
-def charge_reperes(chemin=DATA_JS):
-    """Parcs, arrêts et commerces nommés de data.js → {nom normalisé: (lat, lon)}."""
+# Une commune citée après ces mots ne dit pas où est le bien, mais ce qu'il y a
+# autour : « à 10 min de Dijon » se lit justement comme « pas à Dijon ».
+MARQUEURS_NEGATIFS = (r"(?:proche|pres|a proximite|aux portes|limite|acces|direction|vers|"
+                      r"non loin|a \d+ ?(?:min|mn|km))")
+# Ceux-ci, au contraire, désignent l'emplacement du bien.
+MARQUEURS_POSITIFS = (r"(?:a|sur|dans|secteur|commune de|ville de|situee? a|situe a|"
+                      r"centre de|centre|quartier de|quartier|au coeur de|coeur de)")
+
+RE_CODE_POSTAL = re.compile(r"\b(\d{5})\b")
+
+
+def charge_geo(chemin=DATA_JS):
+    """Référentiel de lieux tiré de data.js : communes, quartiers, arrêts, parcs.
+
+    → {"communes": {clé: (nom, lat, lon)}, "quartiers": …, "reperes": …}
+    Les clés sont normalisées sans accents, pour être cherchées dans le texte.
+    """
+    vide = {"communes": {}, "quartiers": {}, "reperes": {}}
     if not os.path.exists(chemin):
-        log(f"  {chemin} absent : les repères (parcs, arrêts) ne serviront pas")
-        return {}
+        log(f"  {chemin} absent : aucun référentiel de lieux")
+        return vide
     with open(chemin, encoding="utf-8") as f:
         brut = f.read()
     data = json.loads(brut[brut.index("{"):brut.rstrip().rstrip(";").rindex("}") + 1])
-    reperes = {}
-    for s in data.get("stops", []):
-        nom = s[0]
-        if len(nom) >= 4:
-            reperes.setdefault(sans_accents(nom), (nom, (s[4], s[5])))
-    # Les parcs n'ont pas de coordonnées dans data.js ; on les géocodera au besoin.
-    for nom in data.get("parks", []):
-        if len(nom) >= 5 and nom.lower() not in ("parc", "bois", "jardin"):
-            reperes.setdefault(sans_accents(nom), (nom, None))
-    return reperes
+
+    def table(entrees, long_min):
+        t = {}
+        for e in entrees:
+            nom = e[0] if isinstance(e, (list, tuple)) else e
+            lat = e[1] if isinstance(e, (list, tuple)) and len(e) > 2 else None
+            lon = e[2] if isinstance(e, (list, tuple)) and len(e) > 2 else None
+            if nom and len(nom) >= long_min:
+                t.setdefault(sans_accents(nom), (nom, lat, lon))
+        return t
+
+    geo = {
+        "communes": table(data.get("communes", []), 3),
+        "quartiers": table(data.get("quartiers", []), 4),
+        "reperes": {},
+    }
+    # Arrêts et parcs : des points de repère cités en clair dans les annonces.
+    reperes = [[s[0], s[4], s[5]] for s in data.get("stops", []) if len(s[0]) >= 4]
+    reperes += [p for p in data.get("parks", [])
+                if isinstance(p, (list, tuple)) and p[0].lower() not in ("parc", "bois", "jardin")]
+    geo["reperes"] = table(reperes, 5)
+    if not geo["communes"]:
+        log("  data.js ne contient pas de communes : relancer build_dijon.py "
+            "pour pouvoir corriger une localisation déclarée")
+    return geo
 
 
-def indices(texte, reperes):
-    """Indices de localisation trouvés dans le texte, du plus précis au moins précis."""
-    trouves = []
-    for m in RE_VOIE.finditer(texte):
-        libelle = re.sub(r"\s+", " ", m.group(0)).strip(" ,.;:")
-        if len(libelle) > 8:
-            trouves.append(("voie", libelle, None))
-    t = sans_accents(texte)
-    for nom_norm, (nom, coord) in reperes.items():
-        if nom_norm in t:
-            trouves.append(("repere", nom, coord))
-    # dédoublonnage en gardant l'ordre
-    vus, sortie = set(), []
-    for kind, libelle, coord in trouves:
-        if libelle.lower() not in vus:
-            vus.add(libelle.lower())
-            sortie.append((kind, libelle, coord))
-    return sortie
+# Le trait d'union et l'apostrophe font partie du nom : sans les exclure des
+# bords, « Dijon » se reconnaît à l'intérieur de « Fontaine-lès-Dijon ».
+BORD_G, BORD_D = r"(?<![a-z0-9'’\-])", r"(?![a-z0-9'’\-])"
 
 
-def geocode(question, session):
+def occurrences(t_norm, table):
+    """Noms de `table` trouvés dans le texte, du plus long au plus court.
+
+    Les plus longs sont servis d'abord et réservent leur emplacement : sinon
+    « Fontaine-lès-Dijon » et « Dijon » se disputeraient le même passage, et
+    l'annonce partirait dans la mauvaise commune.
+    """
+    pris = []
+    for cle in sorted(table, key=len, reverse=True):
+        valeur = table[cle]
+        for m in re.finditer(BORD_G + re.escape(cle) + BORD_D, t_norm):
+            if any(m.start() < fin and debut < m.end() for debut, fin in pris):
+                continue
+            pris.append((m.start(), m.end()))
+            yield cle, valeur, m
+
+
+def commune_du_texte(t_norm, geo):
+    """Commune déduite du contenu de l'annonce.
+
+    → (nom, lat, lon, force) où force vaut "forte" ou "faible", ou None.
+    """
+    fortes, faibles = Counter(), Counter()
+    coords = {}
+    for cle, (nom, lat, lon), m in occurrences(t_norm, geo["communes"]):
+        avant = t_norm[max(0, m.start() - 30):m.start()]
+        apres = t_norm[m.end():m.end() + 14]
+        coords[nom] = (lat, lon)
+        if re.search(MARQUEURS_NEGATIFS + r"[ ,;:'’a-z]{0,14}$", avant):
+            continue
+        # « à Chenôve », « secteur Chenôve », ou « Chenôve 21300 » : le bien y est.
+        if re.search(MARQUEURS_POSITIFS + r"[ ,]+$", avant) or re.match(r"[ ,]*\d{5}\b", apres):
+            fortes[nom] += 1
+        else:
+            faibles[nom] += 1
+    for table, force in ((fortes, "forte"), (faibles, "faible")):
+        if table:
+            nom = table.most_common(1)[0][0]
+            return nom, coords[nom][0], coords[nom][1], force
+    return None
+
+
+def codes_postaux(t_norm, session):
+    """Communes déduites des codes postaux cités. Nécessite le réseau."""
+    if session is None:
+        return []
+    out = []
+    for cp in dict.fromkeys(RE_CODE_POSTAL.findall(t_norm)):
+        r = geocode(cp, session, type_ban="municipality")
+        if r:
+            out.append((r[3], r[0], r[1]))
+    return out
+
+
+def geocode(question, session, type_ban=None):
     """→ (lat, lon, type BAN, libellé) ou None."""
     params = {"q": question, "limit": 1, "lat": BIAIS[0], "lon": BIAIS[1]}
+    if type_ban:
+        params["type"] = type_ban
     try:
         r = session.get(BAN_URL, params=params, timeout=30)
         r.raise_for_status()
@@ -202,21 +275,77 @@ def geocode(question, session):
     return lat, lon, p.get("type", "street"), p.get("label", question)
 
 
-def situe(texte, reperes, session):
-    """Retient l'indice le plus précis qu'on sache placer."""
-    for kind, libelle, coord in indices(texte, reperes):
-        if kind == "repere" and coord:
-            return {"lat": coord[0], "lon": coord[1], "precision": PRECISION_M["repere"],
-                    "indice": libelle, "source": "repère"}
+def voies(texte):
+    """Noms de voie cités, dans l'ordre du texte."""
+    vus, out = set(), []
+    for m in RE_VOIE.finditer(texte):
+        libelle = re.sub(r"\s+", " ", m.group(0)).strip(" ,.;:")
+        if len(libelle) > 8 and libelle.lower() not in vus:
+            vus.add(libelle.lower())
+            out.append(libelle)
+    return out
+
+
+def situe(texte, geo, session, commune_declaree=None):
+    """Place le bien à partir des indices du texte.
+
+    L'ordre compte : on établit d'abord la commune, puis on cherche la rue
+    *dans cette commune*. Sans ça, « rue des Vignes » d'une annonce à Chenôve
+    serait géocodée à Dijon, et le bien atterrirait à cinq kilomètres de là.
+    Le texte prime sur la localisation déclarée, qui est un levier de
+    visibilité pour l'annonceur.
+    """
+    t_norm = sans_accents(texte)
+
+    trouvee = commune_du_texte(t_norm, geo)
+    commune, c_lat, c_lon, force = trouvee if trouvee else (None, None, None, None)
+    if commune is None:
+        for nom, lat, lon in codes_postaux(t_norm, session):
+            commune, c_lat, c_lon, force = nom, lat, lon, "forte"
+            break
+    if commune is None and commune_declaree:
+        commune, force = commune_declaree, "declaree"
+
+    conflit = bool(commune and commune_declaree
+                   and sans_accents(commune) != sans_accents(commune_declaree)
+                   and force == "forte")
+
+    def resultat(lat, lon, precision, indice, source):
+        return {"lat": lat, "lon": lon, "precision": precision, "indice": indice,
+                "source": source, "commune": commune, "conflit": conflit}
+
+    # 1. une rue, replacée dans sa commune
+    for libelle in voies(texte):
         if session is None:
-            continue
-        r = geocode(f"{libelle}, Dijon", session)
+            break
+        question = f"{libelle}, {commune}" if commune else libelle
+        r = geocode(question, session)
         if r:
             lat, lon, typ, label = r
-            precision = (PRECISION_M["repere"] if kind == "repere"
-                         else PRECISION_M.get(typ, PRECISION_M["street"]))
-            return {"lat": lat, "lon": lon, "precision": precision,
-                    "indice": label, "source": "adresse" if kind == "voie" else "repère"}
+            return resultat(lat, lon, PRECISION_M.get(typ, PRECISION_M["street"]),
+                            label, "adresse")
+
+    # 2. un quartier nommé
+    for cle, (nom, lat, lon), m in occurrences(t_norm, geo["quartiers"]):
+        if lat is not None:
+            return resultat(lat, lon, PRECISION_M["quartier"], nom, "quartier")
+
+    # 3. un repère : parc, arrêt
+    for cle, (nom, lat, lon), m in occurrences(t_norm, geo["reperes"]):
+        if lat is not None:
+            return resultat(lat, lon, PRECISION_M["repere"], nom, "repère")
+        if session is not None:
+            r = geocode(f"{nom}, {commune}" if commune else nom, session)
+            if r:
+                return resultat(r[0], r[1], PRECISION_M["repere"], r[3], "repère")
+
+    # 4. la commune seule
+    if c_lat is not None:
+        return resultat(c_lat, c_lon, PRECISION_M["municipality"], commune, "commune")
+    if commune and session is not None:
+        r = geocode(commune, session, type_ban="municipality")
+        if r:
+            return resultat(r[0], r[1], PRECISION_M["municipality"], r[3], "commune")
     return None
 
 
@@ -353,16 +482,17 @@ def main():
         par_url[cle] = garde
     log(f"  {len(par_url)} annonce(s) distincte(s) sur {len(brutes)} ligne(s) capturée(s)")
 
-    log("Repères…")
-    reperes = charge_reperes()
-    log(f"  {len(reperes)} noms d'arrêts et de parcs utilisables")
+    log("Référentiel de lieux…")
+    geo = charge_geo()
+    log(f"  {len(geo['communes'])} communes, {len(geo['quartiers'])} quartiers, "
+        f"{len(geo['reperes'])} arrêts et parcs")
     flous = centroides(list(par_url.values()))
     if flous:
         log(f"  {len(flous)} coordonnée(s) partagée(s) par plusieurs annonces : "
             f"traitées comme des centres de commune")
 
     log("Lecture des annonces…")
-    annonces, sans_position = [], 0
+    annonces, sans_position, conflits = [], 0, 0
     for c in par_url.values():
         texte = c["texte"]
         a = {
@@ -373,7 +503,7 @@ def main():
             "surface": c["surface"] or extrait_surface(texte),
             "pieces": c["pieces"] or extrait_pieces(texte),
         }
-        pos = situe(texte, reperes, session)
+        pos = situe(texte, geo, session, commune_declaree=c["ville"])
         if pos is None and c["lat_annonceur"] and c["lon_annonceur"]:
             cle = (round(c["lat_annonceur"], 4), round(c["lon_annonceur"], 4))
             centre = cle in flous
@@ -389,11 +519,18 @@ def main():
                        "indice": r[3], "source": "commune"}
         if pos:
             a.update(lat=round(pos["lat"], 5), lon=round(pos["lon"], 5),
-                     precision=pos["precision"], indice=pos["indice"], source=pos["source"])
+                     precision=pos["precision"], indice=pos["indice"], source=pos["source"],
+                     commune=pos.get("commune"), declaree=c["ville"],
+                     conflit=bool(pos.get("conflit")))
             annonces.append(a)
+            if a["conflit"]:
+                conflits += 1
             ppm2 = f"{a['prix'] / a['surface']:.0f} €/m²" if a["prix"] and a["surface"] else "—"
-            log(f"  ✓ {a['titre'][:40]:40s} {str(a['prix'] or '—'):>9s} € · {ppm2:>10s}"
-                f" · ±{pos['precision']:>4} m · {pos['indice'][:38]}")
+            log(f"  {'!' if a['conflit'] else '✓'} {a['titre'][:38]:38s} "
+                f"{str(a['prix'] or '—'):>9s} € · {ppm2:>10s}"
+                f" · ±{pos['precision']:>4} m · {pos['indice'][:36]}")
+            if a["conflit"]:
+                log(f"      annonce déclarée à {c['ville']}, le texte dit {pos['commune']}")
         else:
             sans_position += 1
             log(f"  ? {a['titre'][:40]:40s} aucun indice de lieu exploitable")
@@ -402,6 +539,8 @@ def main():
         f.write("window.ANNONCES = ")
         json.dump(annonces, f, ensure_ascii=False, separators=(",", ":"))
         f.write(";\n")
+    if conflits:
+        log(f"  {conflits} annonce(s) replacée(s) dans une autre commune que celle déclarée")
     par_precision = Counter(a["precision"] for a in annonces)
     log(f"OK → {OUTPUT} : {len(annonces)} annonce(s) placée(s), {sans_position} sans position.")
     for prec in sorted(par_precision):

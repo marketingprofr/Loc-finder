@@ -447,6 +447,7 @@ function annoncePopup(a, c, sc) {
       <tr><td>Score de la case</td><td>${sc == null ? 'hors zone' : fmt(sc) + ' / 10'}</td></tr>
     </table>
     <div class="muted" style="margin-top:6px">Situé d'après « ${esc(a.indice)} », à ±${esc(a.precision)} m près.</div>
+    ${a.conflit ? `<div style="margin-top:4px;color:#b45309">Déplacée : l'annonce déclare ${esc(a.declaree)}, sa description dit ${esc(a.commune)}.</div>` : ''}
   </div>`;
 }
 

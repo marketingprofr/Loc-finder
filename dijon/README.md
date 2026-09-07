@@ -42,12 +42,34 @@ Puis `python annonces.py` : les captures sont rangées dans `captures/`, et
 Aucun des deux ne va chercher quoi que ce soit : ils lisent la page que le
 navigateur a déjà reçue, une page à la fois, à votre rythme.
 
-Pour situer le bien, le script cherche dans le texte un nom de rue, de parc ou
-d'arrêt et retient l'indice le plus précis. À défaut il retombe sur la position
-donnée par l'annonce, qui est volontairement floue — et si plusieurs annonces
-partagent la même coordonnée, il en déduit que c'est le centre de la commune
-et le dit. La carte dessine un point quand la position vaut 150 m, la zone
-d'incertitude au-delà. `--sans-geo` traite les captures sans appel réseau.
+### Comment le bien est situé
+
+Le texte prime sur la localisation déclarée : cocher « Dijon » gagne de la
+visibilité, la description ment moins. Le script établit donc d'abord la
+commune, puis cherche la rue **dans cette commune** — « rue des Vignes, à
+Chenôve » ne doit pas atterrir à Dijon.
+
+Les signaux, du plus au moins précis :
+
+1. une rue, géocodée dans la commune retenue — 150 m ;
+2. un quartier nommé (Montchapet, Fontaine d'Ouche…) — 500 m ;
+3. un parc ou un arrêt cité — 400 m ;
+4. la commune seule — 1 500 m ;
+5. à défaut, la position donnée par l'annonce, volontairement floue — 800 m,
+   ou 1 500 m si plusieurs annonces partagent la même coordonnée, auquel cas
+   c'est le centre de la commune et non la position du bien.
+
+Une commune n'est retenue que si le contexte la désigne : « à Chenôve » ou
+« Chenôve 21300 » comptent, « proche de Chenôve » et « à 10 min de Dijon » sont
+écartés — ils disent ce qu'il y a autour, pas où est le bien. Les noms les plus
+longs l'emportent, sans quoi « Dijon » se reconnaîtrait dans
+« Fontaine-lès-Dijon ».
+
+Quand le texte contredit la déclaration, l'annonce est replacée et le signale,
+dans la sortie du script comme dans son popup sur la carte.
+
+La carte dessine un point quand la position vaut 150 m, la zone d'incertitude
+au-delà. `--sans-geo` traite les captures sans appel réseau.
 
 ## Paramètres
 
