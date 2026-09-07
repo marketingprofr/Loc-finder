@@ -25,20 +25,29 @@ Il n'y a pas d'API publique chez SeLoger ou Leboncoin, et leurs conditions
 interdisent l'extraction automatisée : rien ici ne va chercher les pages tout
 seul. La capture se fait depuis votre navigateur, une annonce à la fois.
 
-1. Créer un favori dont l'adresse est la ligne `javascript:…` qui se trouve en
-   bas de `capture-annonce.js` (dans Chrome : clic droit sur la barre de
-   favoris → Ajouter un raccourci, coller la ligne dans le champ URL).
-2. Ouvrir une annonce, cliquer le favori. Un fichier `annonce-….json` part
-   dans les téléchargements.
-3. `python annonces.py` — les captures sont rangées dans `captures/`, et
-   `annonces.js` est écrit à côté de `data.js`.
+Deux favoris à installer, dont l'adresse est la ligne `javascript:…` qui se
+trouve en bas de chaque fichier (dans Chrome : clic droit sur la barre de
+favoris → Ajouter un raccourci, coller la ligne dans le champ URL) :
 
-Le script cherche dans le texte de l'annonce un nom de rue, de parc ou
-d'arrêt, et retient l'indice le plus précis. La carte dessine un point quand
-la position est sûre à 150 m près, un cercle quand elle ne l'est pas : une
-annonce située « d'après le quartier » ne doit pas ressembler à une adresse.
-`--sans-geo` traite les captures sans appel réseau, pour vérifier ce qui est
-extrait du texte.
+- `capture-recherche.js` — sur une **page de résultats**, capture toutes les
+  annonces affichées d'un seul clic : lien, prix, surface, pièces, description.
+  C'est le point d'entrée normal : ouvrez votre recherche habituelle, faites
+  défiler, cliquez le favori.
+- `capture-annonce.js` — sur **une annonce ouverte**, capture sa description
+  entière. À utiliser pour resserrer la position de celles qui vous intéressent.
+
+Puis `python annonces.py` : les captures sont rangées dans `captures/`, et
+`annonces.js` est écrit à côté de `data.js`.
+
+Aucun des deux ne va chercher quoi que ce soit : ils lisent la page que le
+navigateur a déjà reçue, une page à la fois, à votre rythme.
+
+Pour situer le bien, le script cherche dans le texte un nom de rue, de parc ou
+d'arrêt et retient l'indice le plus précis. À défaut il retombe sur la position
+donnée par l'annonce, qui est volontairement floue — et si plusieurs annonces
+partagent la même coordonnée, il en déduit que c'est le centre de la commune
+et le dit. La carte dessine un point quand la position vaut 150 m, la zone
+d'incertitude au-delà. `--sans-geo` traite les captures sans appel réseau.
 
 ## Paramètres
 

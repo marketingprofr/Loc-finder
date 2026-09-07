@@ -25,6 +25,7 @@ import shutil
 import sys
 import time
 import unicodedata
+from collections import Counter
 
 import requests
 
@@ -45,8 +46,13 @@ PRECISION_M = {
     "housenumber": 60,
     "street": 150,
     "repere": 400,        # parc, arrêt, quartier nommé
+    "annonceur": 800,     # position donnée par l'annonce, volontairement floue
     "municipality": 1500,
 }
+
+# Une même coordonnée revenant sur plusieurs annonces n'est pas la position des
+# biens : c'est le centre de la commune. On la traite comme telle.
+CENTROIDE_MIN = 3
 
 # Bornes de vraisemblance, pour ne pas retenir n'importe quel nombre.
 PRIX_MIN, PRIX_MAX = 30_000, 3_000_000
@@ -216,6 +222,71 @@ def situe(texte, reperes, session):
 
 # ============================== CAPTURES =====================================
 
+def entier(v):
+    try:
+        return int(float(str(v).replace(",", ".")))
+    except (TypeError, ValueError):
+        return None
+
+
+def reel(v):
+    try:
+        return float(str(v).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def type_annonce(libelle):
+    t = sans_accents(str(libelle or ""))
+    if "maison" in t or "villa" in t or "pavillon" in t:
+        return "maison"
+    if "appartement" in t or "appart" in t:
+        return "appartement"
+    return None
+
+
+def deplie(captures):
+    """Aplatit captures d'annonce et captures de recherche en une liste unique.
+
+    Une capture de recherche apporte déjà prix, surface et nombre de pièces sous
+    forme structurée : inutile de les redécouvrir dans le texte. Ce qu'elle
+    n'apporte pas, c'est une position fiable, et c'est là que le texte sert.
+    """
+    out = []
+    for c in captures:
+        if c.get("type") == "recherche":
+            for a in c.get("annonces", []):
+                at = a.get("attributs") or {}
+                out.append({
+                    "url": a.get("url"), "site": c.get("site"),
+                    "titre": (a.get("titre") or "").strip()[:120],
+                    "texte": a.get("texte") or "",
+                    "capture": (c.get("capture") or "")[:10],
+                    "prix": entier(a.get("prix")),
+                    "surface": reel(at.get("square")),
+                    "pieces": entier(at.get("rooms")),
+                    "type": type_annonce(at.get("real_estate_type")),
+                    "ville": a.get("ville"),
+                    "lat_annonceur": reel(a.get("lat")), "lon_annonceur": reel(a.get("lon")),
+                })
+        else:
+            out.append({
+                "url": c.get("url"), "site": c.get("site"),
+                "titre": (c.get("titre") or "").strip()[:120],
+                "texte": c.get("texte") or "",
+                "capture": (c.get("capture") or "")[:10],
+                "prix": None, "surface": None, "pieces": None, "type": None,
+                "ville": None, "lat_annonceur": None, "lon_annonceur": None,
+            })
+    return out
+
+
+def centroides(annonces):
+    coords = Counter((round(a["lat_annonceur"], 4), round(a["lon_annonceur"], 4))
+                     for a in annonces if a.get("lat_annonceur") and a.get("lon_annonceur"))
+    return {k for k, n in coords.items() if n >= CENTROIDE_MIN}
+
+
 def dossiers_source():
     maison = os.path.expanduser("~")
     return [os.path.join(maison, "Downloads"), os.path.join(maison, "Téléchargements"), "."]
@@ -257,52 +328,87 @@ def main():
     log("Captures…")
     captures = archive_captures()
     if not captures:
-        log(f"  aucune capture. Installez le favori (voir README) puis cliquez-le sur une annonce.")
+        log("  aucune capture. Installez les favoris (voir README), puis cliquez-les")
+        log("  sur une page de résultats ou sur une annonce ouverte.")
         return
-    # une même annonce recapturée : on garde la plus récente
+    brutes = deplie(captures)
+    # Une même annonce vue en liste puis ouverte : on garde la capture la plus
+    # fournie, celle de la page de l'annonce, qui porte la description entière.
+    # On garde le texte le plus long, mais on complète champ par champ : la ligne
+    # de recherche porte le prix, la surface et la position de l'annonceur, que la
+    # page de l'annonce, elle, ne donne pas sous forme structurée.
+    COMPLETABLES = ("prix", "surface", "pieces", "type", "ville",
+                    "lat_annonceur", "lon_annonceur", "titre", "site", "capture")
     par_url = {}
-    for c in captures:
-        par_url[c.get("url", id(c))] = c
-    log(f"  {len(par_url)} annonce(s) distincte(s) sur {len(captures)} capture(s)")
+    for a in brutes:
+        cle = a.get("url") or id(a)
+        if cle not in par_url:
+            par_url[cle] = a
+            continue
+        b = par_url[cle]
+        garde, autre = (a, b) if len(a["texte"]) > len(b["texte"]) else (b, a)
+        for champ in COMPLETABLES:
+            if not garde.get(champ):
+                garde[champ] = autre.get(champ)
+        par_url[cle] = garde
+    log(f"  {len(par_url)} annonce(s) distincte(s) sur {len(brutes)} ligne(s) capturée(s)")
 
     log("Repères…")
     reperes = charge_reperes()
     log(f"  {len(reperes)} noms d'arrêts et de parcs utilisables")
+    flous = centroides(list(par_url.values()))
+    if flous:
+        log(f"  {len(flous)} coordonnée(s) partagée(s) par plusieurs annonces : "
+            f"traitées comme des centres de commune")
 
     log("Lecture des annonces…")
     annonces, sans_position = [], 0
     for c in par_url.values():
-        texte = c.get("texte", "")
-        pos = situe(texte, reperes, session)
+        texte = c["texte"]
         a = {
-            "url": c.get("url"),
-            "site": c.get("site"),
-            "titre": (c.get("titre") or "").strip()[:120],
-            "type": extrait_type(texte),
-            "prix": extrait_prix(texte),
-            "surface": extrait_surface(texte),
-            "pieces": extrait_pieces(texte),
-            "capture": (c.get("capture") or "")[:10],
+            "url": c["url"], "site": c["site"], "titre": c["titre"], "capture": c["capture"],
+            # La recherche fournit déjà ces champs ; sinon on les tire du texte.
+            "type": c["type"] or extrait_type(texte),
+            "prix": c["prix"] or extrait_prix(texte),
+            "surface": c["surface"] or extrait_surface(texte),
+            "pieces": c["pieces"] or extrait_pieces(texte),
         }
+        pos = situe(texte, reperes, session)
+        if pos is None and c["lat_annonceur"] and c["lon_annonceur"]:
+            cle = (round(c["lat_annonceur"], 4), round(c["lon_annonceur"], 4))
+            centre = cle in flous
+            pos = {"lat": c["lat_annonceur"], "lon": c["lon_annonceur"],
+                   "precision": PRECISION_M["municipality" if centre else "annonceur"],
+                   "indice": (f"centre de {c['ville']}" if centre
+                              else f"position indiquée par l'annonce ({c['ville'] or '?'})"),
+                   "source": "annonceur"}
+        if pos is None and c["ville"] and session is not None:
+            r = geocode(c["ville"], session)
+            if r:
+                pos = {"lat": r[0], "lon": r[1], "precision": PRECISION_M["municipality"],
+                       "indice": r[3], "source": "commune"}
         if pos:
             a.update(lat=round(pos["lat"], 5), lon=round(pos["lon"], 5),
                      precision=pos["precision"], indice=pos["indice"], source=pos["source"])
             annonces.append(a)
             ppm2 = f"{a['prix'] / a['surface']:.0f} €/m²" if a["prix"] and a["surface"] else "—"
-            log(f"  ✓ {a['titre'][:44]:44s} {str(a['prix'] or '—'):>9s} € · {ppm2:>10s}"
-                f" · ±{pos['precision']} m · {pos['indice'][:40]}")
+            log(f"  ✓ {a['titre'][:40]:40s} {str(a['prix'] or '—'):>9s} € · {ppm2:>10s}"
+                f" · ±{pos['precision']:>4} m · {pos['indice'][:38]}")
         else:
             sans_position += 1
-            log(f"  ? {a['titre'][:44]:44s} aucun indice de lieu exploitable")
+            log(f"  ? {a['titre'][:40]:40s} aucun indice de lieu exploitable")
 
     with open(OUTPUT, "w", encoding="utf-8") as f:
         f.write("window.ANNONCES = ")
         json.dump(annonces, f, ensure_ascii=False, separators=(",", ":"))
         f.write(";\n")
+    par_precision = Counter(a["precision"] for a in annonces)
     log(f"OK → {OUTPUT} : {len(annonces)} annonce(s) placée(s), {sans_position} sans position.")
-    if sans_position:
-        log("  Pour celles-là, ajoutez une adresse à la main dans le fichier, ou recapturez")
-        log("  la page une fois la description complète affichée.")
+    for prec in sorted(par_precision):
+        log(f"  ±{prec:>4} m : {par_precision[prec]} annonce(s)")
+    if par_precision.get(PRECISION_M["municipality"]) or par_precision.get(PRECISION_M["annonceur"]):
+        log("  Les moins précises se resserrent en ouvrant l'annonce et en la recapturant :")
+        log("  la description entière contient souvent une rue ou un repère.")
 
 
 if __name__ == "__main__":
