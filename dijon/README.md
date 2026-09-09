@@ -60,8 +60,9 @@ Chenôve » ne doit pas atterrir à Dijon.
 
 Les signaux, du plus au moins précis :
 
-1. une rue, géocodée dans la commune retenue — 150 m, ou 60 m si l'annonce
-   donne un numéro (« au 12 rue de la Liberté ») ;
+1. une rue, géocodée dans la commune retenue — 60 m si l'annonce donne un
+   numéro (« au 12 rue de la Liberté »), 150 m si elle la donne comme adresse
+   (« située rue X »), 300 m si elle ne fait que la citer ;
 2. un quartier nommé (Montchapet, Fontaine d'Ouche…) — 500 m ;
 3. un parc ou un arrêt cité — 400 m ;
 4. la commune seule — 1 500 m ;
@@ -74,8 +75,12 @@ mentionne souvent une rue voisine avant la sienne. Est retenue celle qui porte
 un numéro, puis celle qui tombe dans la commune retenue, puis celle qui est
 donnée comme l'adresse du bien (« située rue X ») plutôt que comme un voisinage
 (« à 200 m de la rue X »). Les libellés couvrent aussi les résidences, clos,
-hameaux et lotissements, et un nom de voie doit contenir un mot capitalisé —
-sans quoi « rue calme et arborée » passait pour une adresse.
+hameaux et lotissements, ce qui oblige à deux garde-fous : un nom de voie doit
+contenir un mot capitalisé, et pas seulement un nombre — sans quoi « rue calme
+et arborée » et « terrain clos de 300 m² » passaient pour des adresses. Et
+comme le géocodeur répond toujours quelque chose, sa réponse doit reprendre
+tous les mots du nom demandé : à « clos de 300 » il proposait « Rue du Clos de
+Tart », à l'autre bout de la ville.
 
 Une commune n'est retenue que si le contexte la désigne : « à Chenôve » ou
 « Chenôve 21300 » comptent, « proche de Chenôve » et « à 10 min de Dijon » sont

@@ -15,6 +15,39 @@ la carte laisse régler les poids de chaque critère et le budget.
 | --- | --- | --- |
 | Dijon Métropole | [`dijon/`](dijon/) | OpenStreetMap, GTFS DiviaMobilités, DVF |
 
+## Sur une machine neuve
+
+Sous Windows, dans PowerShell. Git et Python d'abord, une seule fois — puis
+**fermer et rouvrir PowerShell**, sans quoi les deux commandes restent
+introuvables :
+
+```powershell
+winget install --id Git.Git -e
+winget install --id Python.Python.3.12 -e
+```
+
+Ensuite :
+
+```powershell
+cd $HOME\Documents
+git clone https://github.com/marketingprofr/Loc-finder.git
+cd Loc-finder
+pip install -r requirements.txt
+python dijon\build_dijon.py
+```
+
+Le dernier prend quelques minutes : il télécharge OpenStreetMap, les horaires
+Divia et les ventes DVF. Puis `Invoke-Item dijon\index.html`.
+
+Trois choses ne sont pas dans le dépôt et ne suivent donc pas d'un ordinateur à
+l'autre :
+
+| | Comment le retrouver |
+| --- | --- |
+| `data.js`, `cache/` | reconstruits par `build_dijon.py` |
+| les favoris de capture | `python dijon\favoris.py`, puis reglisser les boutons dans la barre du nouveau navigateur |
+| `dijon/captures/` — vos annonces capturées | à recopier depuis l'ancien poste, sinon elles sont à recapturer |
+
 ## Démarrage rapide
 
 ```
