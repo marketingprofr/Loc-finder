@@ -117,6 +117,17 @@ OVERPASS_URLS = [
 # S'identifier est demandé par la politique d'usage d'OSM.
 USER_AGENT = "loc-finder/1.0 (+https://github.com/marketingprofr/Loc-finder)"
 
+# (connexion, lecture). Une requête Overpass met légitimement plusieurs
+# minutes ; établir la connexion, non. Sans ce découpage, un miroir qui ne
+# répond plus tenait la ligne dix minutes par essai avant qu'on passe au
+# suivant, soit une demi-heure perdue pour rien.
+DELAIS = (15, 600)
+
+# Sur l'emprise de la métropole, la requête ramène des milliers d'éléments.
+# Un miroir peut répondre 200 en servant une base de test vide : la carte se
+# construirait alors sans un commerce ni un arrêt, sans que rien n'échoue.
+OSM_ELEMENTS_MIN = 200
+
 # Ancrés sur le dossier du script : data.js doit tomber à côté de index.html,
 # quel que soit le dossier depuis lequel la commande est lancée.
 ICI = os.path.dirname(os.path.abspath(__file__))
@@ -168,9 +179,9 @@ def download(url, cache_name, data=None):
     for attempt in range(3):
         try:
             if data is None:
-                r = requests.get(url, timeout=600, headers=headers)
+                r = requests.get(url, timeout=DELAIS, headers=headers)
             else:
-                r = requests.post(url, data=data, timeout=600, headers=headers)
+                r = requests.post(url, data=data, timeout=DELAIS, headers=headers)
             r.raise_for_status()
             break
         except Exception as e:  # noqa
@@ -222,15 +233,22 @@ def fetch_osm():
     # La clé de cache suit la requête : sans ça, modifier la requête resservait
     # l'ancienne réponse, amputée de ce qu'on venait d'ajouter.
     cache = f"overpass_{hashlib.sha1(corps.encode()).hexdigest()[:10]}.json"
+    chemin = os.path.join(CACHE_DIR, cache)
     for i, url in enumerate(OVERPASS_URLS):
         try:
-            raw = download(url, cache, data=query)
-            break
+            elements = json.loads(download(url, cache, data=query))["elements"]
+            if len(elements) < OSM_ELEMENTS_MIN:
+                # Réponse valide mais vide : base de test, ou requête tronquée.
+                # La garder en cache figerait une carte sans rien dessus.
+                if os.path.exists(chemin):
+                    os.remove(chemin)
+                raise RuntimeError(f"{len(elements)} éléments seulement, "
+                                   f"miroir sans données utilisables")
+            return elements
         except Exception as e:  # noqa
             if i == len(OVERPASS_URLS) - 1:
                 raise
             log(f"  {url} indisponible ({e}), essai du miroir suivant")
-    return json.loads(raw)["elements"]
 
 
 def element_center(el):
